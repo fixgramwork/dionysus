@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 프로젝트 방향과 기여 기준
+    url: https://github.com/fixgramwork/dionysus/blob/main/readme.md#contributing
+    about: 이슈를 열기 전 현재 저장소 단계와 기여 기준을 확인해주세요.
+  - name: 현재 로드맵
+    url: https://github.com/fixgramwork/dionysus/blob/main/readme.md#roadmap
+    about: 이미 계획된 작업인지 먼저 확인해주세요.
