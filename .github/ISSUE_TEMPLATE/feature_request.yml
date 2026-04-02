@@ -1,6 +1,6 @@
 name: 기능/구조 제안
 description: 새로운 기능, 사용자 흐름, 구조 변경을 제안합니다.
-title: "[제안] "
+title: "[proposal] "
 labels:
   - enhancement
 body:

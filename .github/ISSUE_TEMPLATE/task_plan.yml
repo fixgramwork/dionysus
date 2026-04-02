@@ -1,6 +1,6 @@
 name: 작업 계획
 description: 초기 스캐폴드, 문서, 설정, 운영 작업을 작은 단위로 정리합니다.
-title: "[작업] "
+title: "[task] "
 body:
   - type: markdown
     attributes:
