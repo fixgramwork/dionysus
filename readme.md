@@ -1,9 +1,9 @@
 <div align="center">
   <h1>Dionysus</h1>
-  <p><strong>Project direction, setup expectations, and release intent in one place.</strong></p>
-  <p>Early-stage repository for defining scope and collaboration rules before the first implementation lands.</p>
+  <p><strong>Bootable prototype, setup expectations, and release intent in one place.</strong></p>
+  <p>Early-stage repository with a minimal bootable kernel scaffold and an ISO-first local workflow.</p>
   <p>
-    <img src="https://img.shields.io/badge/status-planning-1f6feb?style=for-the-badge" alt="Status: Planning" />
+    <img src="https://img.shields.io/badge/status-prototype-1f6feb?style=for-the-badge" alt="Status: Prototype" />
     <img src="https://img.shields.io/badge/docs-readme_ready-0a7ea4?style=for-the-badge" alt="Docs: README Ready" />
     <img src="https://img.shields.io/badge/contributions-welcome-2da44e?style=for-the-badge" alt="Contributions: Welcome" />
   </p>
@@ -20,10 +20,10 @@
 | Area | Current State |
 | --- | --- |
 | Repository | `fixgramwork/dionysus` |
-| Stage | Planning |
-| Codebase | Not committed yet |
-| Focus | Define scope, standards, and the first release path |
-| Next milestone | Initial scaffold and runnable setup guide |
+| Stage | Prototype |
+| Codebase | Minimal bootable kernel scaffold |
+| Focus | Bootable ISO pipeline and early kernel iteration |
+| Next milestone | Expand the kernel beyond the GRUB handoff |
 
 ## Overview
 
@@ -56,7 +56,7 @@ This README is intentionally structured like a production open-source repository
 
 ## Project Status
 
-This repository is in the pre-implementation stage.
+This repository now contains a minimal bootable prototype.
 
 Before `v0.1.0`, the project should include:
 
@@ -68,26 +68,32 @@ Before `v0.1.0`, the project should include:
 
 ## Quick Start
 
-The runtime scaffold is not in this repository yet.
-
-Planned local workflow:
+Current local workflow:
 
 ```bash
 git clone https://github.com/fixgramwork/dionysus.git
 cd dionysus
 
 # install dependencies
-# run the app
-# run tests
+# i686-elf-gcc, i686-elf-ld, nasm, grub-mkrescue, xorriso, qemu-system-x86_64
+
+# build the kernel ELF only
+make build
+
+# package a bootable ISO
+make iso
+
+# build, package, and boot with QEMU
+make
 ```
 
-Update this section as soon as the first executable version is committed.
+The default Make target is `run`, so `make` builds the kernel, emits `build/dionysus.iso`, and boots it with QEMU.
 
 ## Roadmap
 
 - [ ] Define the core problem and first user flow
-- [ ] Commit the initial project scaffold
-- [ ] Add development and test instructions
+- [x] Commit the initial project scaffold
+- [x] Add development and test instructions
 - [ ] Introduce CI and code quality checks
 - [ ] Publish the first tagged release
 
