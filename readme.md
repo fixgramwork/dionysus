@@ -104,6 +104,7 @@ Early contributions are welcome, but alignment matters more than volume at this 
 1. Read the workflow conventions before starting:
    - [`docs/conventions/README.md`](docs/conventions/README.md)
    - [`docs/conventions/commit-convention.md`](docs/conventions/commit-convention.md)
+   - [`docs/conventions/branch-convention.md`](docs/conventions/branch-convention.md)
    - [`docs/conventions/issue-convention.md`](docs/conventions/issue-convention.md)
    - [`docs/conventions/pull-request-convention.md`](docs/conventions/pull-request-convention.md)
    - [`docs/conventions/code-convention.md`](docs/conventions/code-convention.md)
