@@ -101,9 +101,15 @@ The default Make target is `run`, so `make` builds the kernel, emits `build/dion
 
 Early contributions are welcome, but alignment matters more than volume at this stage.
 
-1. Open an issue first for feature proposals or structural changes.
-2. Keep pull requests focused on one concern.
-3. Update documentation when behavior or setup changes.
+1. Read the workflow conventions before starting:
+   - [`docs/conventions/README.md`](docs/conventions/README.md)
+   - [`docs/conventions/commit-convention.md`](docs/conventions/commit-convention.md)
+   - [`docs/conventions/issue-convention.md`](docs/conventions/issue-convention.md)
+   - [`docs/conventions/pull-request-convention.md`](docs/conventions/pull-request-convention.md)
+   - [`docs/conventions/code-convention.md`](docs/conventions/code-convention.md)
+2. Open an issue first for feature proposals or structural changes.
+3. Keep pull requests focused on one concern and record validation results.
+4. Update documentation when behavior, workflow, or setup changes.
 
 ## License
 
