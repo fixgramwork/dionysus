@@ -12,7 +12,7 @@ body:
     attributes:
       label: 배경
       description: 왜 지금 이 작업이 필요한지 적어주세요.
-      placeholder: 첫 실행 경로가 아직 없어서, 초기 스캐폴드와 개발 명령을 먼저 정리해야 합니다.
+      placeholder: 부트 가능한 최소 경로는 있지만, 다음 작업자가 바로 이어서 개발하기엔 규칙과 검증 루틴이 부족합니다.
     validations:
       required: true
   - type: textarea
@@ -20,7 +20,7 @@ body:
     attributes:
       label: 목표
       description: 이 이슈가 완료되면 어떤 상태여야 하는지 적어주세요.
-      placeholder: 새로운 기여자가 README만 보고 로컬에서 기본 흐름을 따라갈 수 있어야 합니다.
+      placeholder: 새로운 기여자가 이슈와 규칙 문서만 보고 변경 범위, 검증 방법, PR 작성 방식을 바로 따라갈 수 있어야 합니다.
     validations:
       required: true
   - type: textarea
@@ -50,7 +50,7 @@ body:
     attributes:
       label: 참고 자료
       description: 관련 이슈, PR, 문서, 외부 링크가 있으면 적어주세요.
-      placeholder: 관련 이슈 링크, 참고 문서, 구현 예시 등
+      placeholder: 관련 이슈 링크, docs/conventions 문서, README, 구현 예시 등
   - type: checkboxes
     id: checks
     attributes:
