@@ -3,6 +3,7 @@
 - 해결하려는 문제:
 - 핵심 변경:
 - 이번 PR에서 제외한 범위:
+- 변경 유형: `feat` / `fix` / `build` / `docs` / `refactor` / `test` / `ci` / `chore`
 
 ## 관련 이슈
 
@@ -19,13 +20,21 @@
 
 - 확인 환경:
 - 확인 방법:
+- 확인 결과:
 - 아직 확인하지 못한 항목:
 
+커널, 부트, linker, Makefile 변경이라면 실행한 명령(`make build`, `make iso`, `make run`)과 실제 결과를 함께 적어주세요.
 문서 전용 변경이라면 링크, 경로, 렌더링 확인 결과를 적어주세요.
 
 ## 리뷰 포인트
 
 - 리뷰어가 특히 봐야 할 부분:
+
+## 참고 규칙
+
+- 커밋/PR 제목: `docs/conventions/commit-convention.md`
+- PR 작성/검증 기준: `docs/conventions/pull-request-convention.md`
+- 코드 스타일: `docs/conventions/code-convention.md`
 
 ## 체크리스트
 
