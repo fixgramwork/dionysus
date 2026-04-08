@@ -7,7 +7,7 @@ STATUS := sh scripts/status.sh
 CC := $(CROSS)gcc
 LD := $(CROSS)ld
 AS := nasm
-GRUB_MKRESCUE := grub-mkrescue
+GRUB_MKRESCUE ?= $(shell if command -v grub-mkrescue >/dev/null 2>&1; then printf '%s' grub-mkrescue; elif command -v i686-elf-grub-mkrescue >/dev/null 2>&1; then printf '%s' i686-elf-grub-mkrescue; else printf '%s' grub-mkrescue; fi)
 QEMU := qemu-system-x86_64
 XORRISO := xorriso
 
