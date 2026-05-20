@@ -1,0 +1,49 @@
+#!/bin/sh
+
+set -eu
+
+MODE="${1:-start}"
+STATE_DIR="${DIONYSUS_STATE_DIR:-/run/dionysus}"
+PVE_URL="${DIONYSUS_PVE_URL:-http://127.0.0.1:8006/}"
+API_URL="${DIONYSUS_API_URL:-http://127.0.0.1:8006/api2/json}"
+PROFILES_DIR="${DIONYSUS_PROFILES_DIR:-/usr/share/dionysus/profiles}"
+
+mkdir -p "$STATE_DIR"
+
+log() {
+    printf '[dionysus-init] %s\n' "$*"
+}
+
+print_banner() {
+    printf '\n'
+    printf 'Dionysus Linux Base Console\n'
+    printf 'Initramfs role : bootstrap, network, and rescue shell\n'
+    printf 'Control plane  : dionysus-pveproxy.service in the installed rootfs\n'
+    printf 'Web UI         : %s\n' "$PVE_URL"
+    printf 'API root       : %s\n' "$API_URL"
+    printf 'Profiles       : %s\n' "$PROFILES_DIR"
+    printf '\n'
+}
+
+case "$MODE" in
+    start)
+        log "initramfs does not start the PVE control plane"
+        log "install it into the rootfs with make pve-control-plane-install"
+        ;;
+    stop)
+        log "no initramfs service process to stop"
+        ;;
+    restart)
+        log "no initramfs service process to restart"
+        ;;
+    status)
+        log "initramfs bootstrap active; PVE services run under systemd in the rootfs"
+        ;;
+    banner)
+        print_banner
+        ;;
+    *)
+        log "unsupported mode: $MODE"
+        exit 1
+        ;;
+esac

@@ -1,0 +1,69 @@
+#!/bin/sh
+
+set -eu
+
+MODE="${1:-start}"
+SWAP_FILE="${DIONYSUS_LLM_SWAP_FILE:-/var/lib/dionysus/swap/ollama-kv-cache.swap}"
+SWAP_SIZE_MB="${DIONYSUS_LLM_SWAP_SIZE_MB:-8192}"
+SWAP_PRIORITY="${DIONYSUS_LLM_SWAP_PRIORITY:-20}"
+
+log() {
+    printf '[dionysus-llm-swap] %s\n' "$*"
+}
+
+is_enabled() {
+    swapon --show=NAME --noheadings 2>/dev/null | grep -qx "$SWAP_FILE"
+}
+
+create_swap_file() {
+    mkdir -p "$(dirname "$SWAP_FILE")"
+
+    if [ -f "$SWAP_FILE" ]; then
+        chmod 600 "$SWAP_FILE"
+        return 0
+    fi
+
+    if command -v fallocate >/dev/null 2>&1; then
+        fallocate -l "${SWAP_SIZE_MB}M" "$SWAP_FILE"
+    else
+        dd if=/dev/zero of="$SWAP_FILE" bs=1M count="$SWAP_SIZE_MB" status=none
+    fi
+
+    chmod 600 "$SWAP_FILE"
+    mkswap "$SWAP_FILE" >/dev/null
+}
+
+start_swap() {
+    create_swap_file
+
+    if is_enabled; then
+        log "swap already enabled at $SWAP_FILE"
+        return 0
+    fi
+
+    swapon -p "$SWAP_PRIORITY" "$SWAP_FILE"
+    log "enabled $SWAP_SIZE_MB MiB swap at $SWAP_FILE with priority $SWAP_PRIORITY"
+}
+
+stop_swap() {
+    if is_enabled; then
+        swapoff "$SWAP_FILE"
+        log "disabled swap at $SWAP_FILE"
+        return 0
+    fi
+
+    log "swap is not enabled at $SWAP_FILE"
+}
+
+case "$MODE" in
+    start)
+        start_swap
+        ;;
+    stop)
+        stop_swap
+        ;;
+    *)
+        log "unsupported mode: $MODE"
+        exit 1
+        ;;
+esac

@@ -1,0 +1,6 @@
+name: llm-serve
+description: Tune host reclaim and cache behavior for model serving workloads.
+sysctl:
+  vm.swappiness: "10"
+  vm.vfs_cache_pressure: "50"
+transparent_hugepage: "always"

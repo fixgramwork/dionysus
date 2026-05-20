@@ -1,0 +1,18 @@
+[Unit]
+Description=Dionysus Local LLM swap backing store
+Documentation=https://github.com/fixgramwork/dionysus
+After=local-fs.target
+Before=ollama.service dionysus-pvedaemon.service dionysus-pveproxy.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+Environment=DIONYSUS_LLM_SWAP_FILE=/var/lib/dionysus/swap/ollama-kv-cache.swap
+Environment=DIONYSUS_LLM_SWAP_SIZE_MB=8192
+Environment=DIONYSUS_LLM_SWAP_PRIORITY=20
+EnvironmentFile=-/etc/dionysus/llm-swap.env
+ExecStart=/usr/lib/dionysus/dionysus-llm-swap start
+ExecStop=/usr/lib/dionysus/dionysus-llm-swap stop
+
+[Install]
+WantedBy=multi-user.target

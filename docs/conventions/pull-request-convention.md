@@ -62,8 +62,8 @@ type(scope): summary
 - make iso
 
 확인 결과:
-- kernel.elf 링크 성공
-- dionysus.iso 생성 성공
+- Linux bzImage 빌드 경로 확인
+- dionysus-linux.iso 생성 성공
 ```
 
 ## 리뷰 준비 규칙

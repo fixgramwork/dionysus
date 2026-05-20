@@ -1,0 +1,40 @@
+#!/bin/sh
+
+set -eu
+
+export PATH=/bin:/sbin:/usr/bin:/usr/sbin
+
+mkdir -p /proc /sys /dev /run /sys/fs/cgroup
+mount -t proc proc /proc
+mount -t sysfs sysfs /sys
+mount -t devtmpfs devtmpfs /dev 2>/dev/null || true
+mount -t cgroup2 none /sys/fs/cgroup 2>/dev/null || true
+
+printf '[dionysus-init] Linux base bootstrapped\n'
+
+if [ -r /etc/dionysus-release ]; then
+    printf '[dionysus-init] release: '
+    cat /etc/dionysus-release
+fi
+
+if [ -x /usr/bin/dionysus-agent ]; then
+    /usr/bin/dionysus-agent bootstrap
+else
+    printf '[dionysus-init] missing /usr/bin/dionysus-agent\n'
+fi
+
+if [ -x /usr/bin/dionysus-network ]; then
+    /usr/bin/dionysus-network start
+else
+    printf '[dionysus-init] missing /usr/bin/dionysus-network\n'
+fi
+
+if [ -x /usr/bin/dionysus-services ]; then
+    /usr/bin/dionysus-services start
+    /usr/bin/dionysus-services banner
+else
+    printf '[dionysus-init] missing /usr/bin/dionysus-services\n'
+fi
+
+printf '[dionysus-init] dropping into rescue shell\n'
+exec /bin/sh

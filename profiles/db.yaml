@@ -1,0 +1,6 @@
+name: db
+description: Keep reclaim conservative and prioritize predictable cache retention for database workloads.
+sysctl:
+  vm.swappiness: "5"
+  vm.vfs_cache_pressure: "40"
+transparent_hugepage: "never"
