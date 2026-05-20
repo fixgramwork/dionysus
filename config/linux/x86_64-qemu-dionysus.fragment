@@ -1,0 +1,40 @@
+# Fast serial-only QEMU boot fragment for the Dionysus initramfs smoke path.
+# The systemd PVE control plane belongs in the installed rootfs; this kernel
+# only needs enough support to run /init on the serial console.
+
+CONFIG_64BIT=y
+CONFIG_X86_64=y
+CONFIG_EXPERT=y
+CONFIG_EMBEDDED=y
+
+CONFIG_PRINTK=y
+CONFIG_BUG=y
+CONFIG_ELF_CORE=y
+CONFIG_BASE_FULL=y
+CONFIG_FUTEX=y
+CONFIG_EPOLL=y
+CONFIG_SIGNALFD=y
+CONFIG_TIMERFD=y
+CONFIG_EVENTFD=y
+CONFIG_SHMEM=y
+
+CONFIG_BINFMT_ELF=y
+CONFIG_BINFMT_SCRIPT=y
+
+CONFIG_BLK_DEV_INITRD=y
+CONFIG_RD_GZIP=y
+
+CONFIG_DEVTMPFS=y
+CONFIG_DEVTMPFS_MOUNT=y
+CONFIG_TMPFS=y
+CONFIG_PROC_FS=y
+CONFIG_SYSFS=y
+
+CONFIG_TTY=y
+CONFIG_SERIAL_8250=y
+CONFIG_SERIAL_8250_CONSOLE=y
+
+# CONFIG_VT is not set
+# CONFIG_NET is not set
+# CONFIG_PCI is not set
+# CONFIG_VIRTIO is not set

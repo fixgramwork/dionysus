@@ -1,0 +1,8 @@
+# Dionysus Raspberry Pi ARM64 boot configuration.
+# Keep this file on the FAT boot partition beside kernel8.img and cmdline.txt.
+
+arm_64bit=1
+enable_uart=1
+disable_splash=1
+kernel=kernel8.img
+initramfs dionysus-initramfs.cpio.gz followkernel

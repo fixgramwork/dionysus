@@ -1,0 +1,55 @@
+#!/bin/sh
+
+set -eu
+
+MODE="${1:-bootstrap}"
+STATE_DIR="${DIONYSUS_STATE_DIR:-/run/dionysus}"
+
+mkdir -p "$STATE_DIR"
+
+log() {
+    printf '[dionysus-agent] %s\n' "$*"
+}
+
+capture_file() {
+    source_path="$1"
+    target_name="$2"
+
+    if [ -r "$source_path" ]; then
+        cat "$source_path" > "$STATE_DIR/$target_name"
+        log "captured $source_path"
+    else
+        log "skipped missing $source_path"
+    fi
+}
+
+write_summary() {
+    {
+        printf 'mode=%s\n' "$MODE"
+        printf 'kernel='
+        uname -a 2>/dev/null || true
+        if [ -r /proc/cmdline ]; then
+            printf 'cmdline='
+            cat /proc/cmdline
+        fi
+    } > "$STATE_DIR/bootstrap.summary"
+}
+
+case "$MODE" in
+    bootstrap)
+        log "starting bootstrap capture"
+        capture_file /proc/meminfo meminfo
+        capture_file /proc/iomem iomem
+        capture_file /proc/cmdline cmdline
+        write_summary
+        log "bootstrap capture complete"
+        ;;
+    health)
+        write_summary
+        log "health summary refreshed"
+        ;;
+    *)
+        log "unsupported mode: $MODE"
+        exit 1
+        ;;
+esac

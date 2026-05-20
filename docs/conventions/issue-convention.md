@@ -46,6 +46,7 @@ prefix는 영어 소문자로 작성합니다.
 
 - `make build` 결과
 - `make iso` 결과
+- `make run` 결과
 - QEMU 직렬 출력
 - 화면 캡처 또는 부팅 단계 설명
 

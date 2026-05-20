@@ -1,0 +1,67 @@
+#!/usr/bin/env perl
+
+use strict;
+use warnings;
+
+use FindBin;
+use Getopt::Long qw(GetOptions);
+use HTTP::Daemon;
+use HTTP::Response;
+use HTTP::Status qw(:constants);
+use JSON::PP qw(encode_json);
+use lib "$FindBin::Bin/../lib";
+use lib '/usr/share/perl5';
+
+use Dionysus::PVE::API;
+
+my %config = (
+    listen => $ENV{DIONYSUS_PVE_DAEMON_LISTEN} || '127.0.0.1:8507',
+    proc_root => $ENV{DIONYSUS_PROC_ROOT} || '/proc',
+    sys_root => $ENV{DIONYSUS_SYS_ROOT} || '/sys',
+    profiles_dir => $ENV{DIONYSUS_PROFILES_DIR} || '/usr/share/dionysus/profiles',
+    ollama_api => $ENV{DIONYSUS_OLLAMA_API} || 'http://127.0.0.1:11434',
+);
+
+GetOptions(
+    'listen=s' => \$config{listen},
+    'proc-root=s' => \$config{proc_root},
+    'sys-root=s' => \$config{sys_root},
+    'profiles-dir=s' => \$config{profiles_dir},
+    'ollama-api=s' => \$config{ollama_api},
+) or die "invalid arguments\n";
+
+my ($host, $port) = split(/:/, $config{listen}, 2);
+$host = '127.0.0.1' if !defined($host) || $host eq '';
+$port = 8507 if !defined($port) || $port eq '';
+
+my $api = Dionysus::PVE::API->new(%config);
+my $daemon = HTTP::Daemon->new(
+    LocalAddr => $host,
+    LocalPort => $port,
+    ReuseAddr => 1,
+) or die "failed to listen on $config{listen}: $!\n";
+
+print "[dionysus-pvedaemon] listening on $host:$port\n";
+
+while (my $connection = $daemon->accept) {
+    while (my $request = $connection->get_request) {
+        my $path = $request->uri->path;
+        if ($path !~ m{^/api2/json/}) {
+            $connection->send_response(_json_response(HTTP_NOT_FOUND, { errors => { path => 'not found' }, data => undef }));
+            next;
+        }
+
+        my ($status, $payload) = $api->handle($request->method, $path, $request->content);
+        $connection->send_response(_json_response($status, $payload));
+    }
+    $connection->close;
+}
+
+sub _json_response {
+    my ($status, $payload) = @_;
+    my $response = HTTP::Response->new($status);
+    $response->header('Content-Type' => 'application/json');
+    $response->header('Access-Control-Allow-Origin' => '*');
+    $response->content(encode_json($payload));
+    return $response;
+}

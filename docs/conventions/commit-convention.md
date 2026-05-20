@@ -90,6 +90,7 @@ What:
 Validation:
 - make build
 - make iso
+- make run
 ```
 
 ## 커밋 분리 기준

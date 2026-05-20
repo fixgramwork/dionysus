@@ -1,0 +1,41 @@
+#!/bin/sh
+
+set -eu
+
+MODE="${1:-start}"
+STATE_DIR="${DIONYSUS_STATE_DIR:-/run/dionysus}"
+INTERFACE="${DIONYSUS_NET_IFACE:-eth0}"
+UDHCPC_SCRIPT="${DIONYSUS_UDHCPC_SCRIPT:-/usr/share/udhcpc/default.script}"
+
+mkdir -p "$STATE_DIR"
+
+log() {
+    printf '[dionysus-network] %s\n' "$*"
+}
+
+start_network() {
+    ip link set lo up 2>/dev/null || ifconfig lo up 2>/dev/null || true
+    ip link set "$INTERFACE" up 2>/dev/null || ifconfig "$INTERFACE" up 2>/dev/null || true
+
+    if command -v udhcpc >/dev/null 2>&1; then
+        if udhcpc -q -t 3 -T 3 -i "$INTERFACE" -s "$UDHCPC_SCRIPT" >"$STATE_DIR/udhcpc.log" 2>&1; then
+            log "dhcp lease acquired on $INTERFACE"
+            return 0
+        fi
+
+        log "dhcp did not complete on $INTERFACE; see $STATE_DIR/udhcpc.log"
+        return 0
+    fi
+
+    log "udhcpc is unavailable; network remains manually configured"
+}
+
+case "$MODE" in
+    start)
+        start_network
+        ;;
+    *)
+        log "unsupported mode: $MODE"
+        exit 1
+        ;;
+esac
