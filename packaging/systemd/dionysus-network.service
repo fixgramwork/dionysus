@@ -1,0 +1,17 @@
+[Unit]
+Description=Dionysus persistent network setup
+Documentation=https://github.com/fixgramwork/dionysus
+After=local-fs.target
+Before=network-online.target dionysus-pvedaemon.service dionysus-pveproxy.service
+Wants=network.target
+
+[Service]
+Type=oneshot
+EnvironmentFile=-/etc/dionysus/network.env
+ExecStart=/usr/lib/dionysus/dionysus-network start
+ExecStop=/usr/lib/dionysus/dionysus-network stop
+RemainAfterExit=yes
+TimeoutStartSec=45s
+
+[Install]
+WantedBy=multi-user.target network-online.target

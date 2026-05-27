@@ -27,6 +27,8 @@ INITRAMFS_DIR ?= initramfs/overlay
 INITRAMFS_STAGING ?= $(BUILD_DIR)/initramfs/rootfs
 INITRAMFS_ARCHIVE ?= $(BUILD_DIR)/initramfs/dionysus-initramfs.cpio.gz
 PVE_CONTROL_PLANE_ROOTFS ?= $(BUILD_DIR)/pve-control-plane-rootfs
+PVE_CHECK_ROOTFS ?= $(BUILD_DIR)/pve-check-rootfs
+DIONYSUSD_BIN ?= $(BUILD_DIR)/dionysusd
 
 LINUX_QEMU_FLAGS := -cdrom $(LINUX_ISO_FILE) -m 1024M -serial stdio
 
@@ -37,7 +39,7 @@ ARM64_QEMU_INITRAMFS_STAGING ?= $(BUILD_DIR)/qemu-arm64/initramfs/rootfs
 ARM64_QEMU_INITRAMFS_ARCHIVE ?= $(BUILD_DIR)/qemu-arm64/initramfs/dionysus-initramfs.cpio.gz
 ARM64_QEMU_BUILDER_IMAGE ?= dionysus/linux-builder:bookworm-arm64
 ARM64_QEMU_BUILDER_PLATFORM ?= linux/arm64
-ARM64_QEMU_FLAGS := -M virt -cpu cortex-a57 -m 1024M -nographic -kernel $(ARM64_QEMU_IMAGE) -initrd $(ARM64_QEMU_INITRAMFS_ARCHIVE) -append "console=ttyAMA0 rdinit=/init"
+ARM64_QEMU_FLAGS := -M virt -cpu cortex-a57 -m 1024M -nographic -kernel $(ARM64_QEMU_IMAGE) -initrd $(ARM64_QEMU_INITRAMFS_ARCHIVE) -append "console=ttyAMA0 rdinit=/init" -netdev user,id=net0 -device virtio-net-device,netdev=net0
 
 RASPI_LINUX_DIR ?= upstream/raspberrypi-linux
 RASPI_LINUX_REMOTE ?= https://github.com/raspberrypi/linux.git
@@ -55,7 +57,7 @@ RASPI_KERNEL_TARGETS ?= Image dtbs
 RASPI_KERNEL_NAME ?= kernel8.img
 RASPI_CROSS_COMPILE ?= aarch64-linux-gnu-
 
-.PHONY: all build iso run clean help pve-check pve-control-plane-install linux-fetch linux-status linux-initramfs linux-initramfs-layout linux-kernel linux-iso linux-run linux-qemu-arm64-kernel linux-qemu-arm64-initramfs linux-qemu-arm64-run raspi-fetch raspi-status raspi-initramfs raspi-kernel raspi-boot check-iso-tools check-run-tools check-arm64-run-tools check-linux-tools check-linux-build-tools check-initramfs-tools check-pve-tools
+.PHONY: all build iso run clean help dionysusd pve-check pve-control-plane-install pve-control-plane-host-install linux-fetch linux-status linux-initramfs linux-initramfs-layout linux-kernel linux-iso linux-run linux-qemu-arm64-kernel linux-qemu-arm64-initramfs linux-qemu-arm64-run raspi-fetch raspi-status raspi-initramfs raspi-kernel raspi-boot check-iso-tools check-run-tools check-arm64-run-tools check-linux-tools check-linux-build-tools check-initramfs-tools check-pve-tools
 
 all: run
 
@@ -72,7 +74,8 @@ help:
 	@$(STATUS) info "make linux-iso    Package bzImage + initramfs into a GRUB ISO."
 	@$(STATUS) info "make linux-run    Boot the Linux-based ISO with QEMU."
 	@$(STATUS) info "make linux-qemu-arm64-run Boot a fast ARM64 QEMU initramfs smoke VM."
-	@$(STATUS) info "make pve-control-plane-install Stage the Proxmox-style Perl/API2/ExtJS control plane."
+	@$(STATUS) info "make pve-control-plane-install Stage the Rust/API2 web control plane."
+	@$(STATUS) info "make pve-control-plane-host-install Install the Ollama RAM control plane on this systemd host."
 	@$(STATUS) info "make raspi-fetch  Clone or update Raspberry Pi Linux in $(RASPI_LINUX_DIR)."
 	@$(STATUS) info "make raspi-boot   Build a Raspberry Pi ARM64 boot partition overlay."
 	@$(STATUS) info "make clean     Remove generated build artifacts."
@@ -112,14 +115,15 @@ check-initramfs-tools:
 	@$(STATUS) success "Initramfs packaging tools are available"
 
 check-pve-tools:
-	@$(STATUS) info "Checking Proxmox-style Perl control-plane tools"
-	@if ! command -v perl >/dev/null 2>&1; then \
-		$(STATUS) error "Missing required tool: perl"; \
-		$(STATUS) error "Install Perl before staging the PVE control plane."; \
-		exit 1; \
-	fi
-	@perl -MJSON::PP -MHTTP::Daemon -MHTTP::Status -MHTTP::Tiny -MGetopt::Long -e '1'
-	@$(STATUS) success "Perl control-plane tools are available"
+	@$(STATUS) info "Checking Rust control-plane tools"
+	@for tool in cargo sqlite3; do \
+		if ! command -v "$$tool" >/dev/null 2>&1; then \
+			$(STATUS) error "Missing required tool: $$tool"; \
+			$(STATUS) error "Install cargo and sqlite3 before staging the control plane."; \
+			exit 1; \
+		fi; \
+	done
+	@$(STATUS) success "Rust control-plane tools are available"
 
 check-iso-tools:
 	@$(STATUS) info "Checking ISO packaging tools"
@@ -238,15 +242,33 @@ linux-qemu-arm64-run: check-arm64-run-tools $(ARM64_QEMU_IMAGE) $(ARM64_QEMU_INI
 		exit $$status; \
 	fi
 
-pve-check: check-pve-tools
-	@$(STATUS) info "Checking Proxmox-style Perl modules and daemons"
-	@perl -I pve/lib -c pve/lib/Dionysus/PVE/API.pm
-	@perl -I pve/lib -c pve/bin/dionysus-pvedaemon
-	@perl -I pve/lib -c pve/bin/dionysus-pveproxy
+dionysusd: $(DIONYSUSD_BIN)
 
-pve-control-plane-install: pve-check scripts/install-pve-control-plane.sh pve/lib/Dionysus/PVE/API.pm pve/bin/dionysus-pvedaemon pve/bin/dionysus-pveproxy pve/www/index.html packaging/systemd/dionysus-pve.env packaging/systemd/dionysus-pvedaemon.service packaging/systemd/dionysus-pveproxy.service packaging/systemd/dionysus-llm-swap.service packaging/systemd/dionysus-llm-swap.env packaging/systemd/dionysus-llm-swap
+$(DIONYSUSD_BIN): Cargo.toml Cargo.lock src/bin/dionysusd.rs
+	@$(STATUS) info "Building Rust control-plane daemon"
+	@cargo build --release --bin dionysusd
+	@mkdir -p "$(dir $(DIONYSUSD_BIN))"
+	@cp target/release/dionysusd "$(DIONYSUSD_BIN)"
+
+pve-check: check-pve-tools $(DIONYSUSD_BIN)
+	@$(STATUS) info "Running Rust control-plane unit tests"
+	@cargo test --bin dionysusd
+	@$(STATUS) info "Checking control-plane shell wrappers"
+	@sh -n pve/bin/dionysus-metricsd
+	@sh -n pve/bin/dionysus-pvedaemon
+	@sh -n pve/bin/dionysus-pveproxy
+	@sh -n packaging/systemd/dionysus-network
+	@sh -n scripts/install-pve-control-plane.sh
+	@$(STATUS) info "Verifying staged PVE control-plane install in $(PVE_CHECK_ROOTFS)"
+	@DESTDIR="$(PVE_CHECK_ROOTFS)" DIONYSUSD_BIN="$(DIONYSUSD_BIN)" DIONYSUS_PROFILES_DIR="profiles" $(PVE_CONTROL_PLANE_INSTALL)
+
+pve-control-plane-install: pve-check scripts/install-pve-control-plane.sh $(DIONYSUSD_BIN) pve/bin/dionysus-metricsd pve/bin/dionysus-pvedaemon pve/bin/dionysus-pveproxy pve/www/index.html packaging/systemd/dionysus-pve.env packaging/systemd/dionysus-network packaging/systemd/dionysus-network.env packaging/systemd/dionysus-network.service packaging/systemd/dionysus-metricsd.service packaging/systemd/dionysus-pvedaemon.service packaging/systemd/dionysus-pveproxy.service packaging/systemd/dionysus-llm-swap.service packaging/systemd/dionysus-llm-swap.env packaging/systemd/dionysus-llm-swap
 	@$(STATUS) info "Staging Proxmox-style Dionysus control plane in $(PVE_CONTROL_PLANE_ROOTFS)"
-	@DESTDIR="$(PVE_CONTROL_PLANE_ROOTFS)" DIONYSUS_PROFILES_DIR="profiles" $(PVE_CONTROL_PLANE_INSTALL)
+	@DESTDIR="$(PVE_CONTROL_PLANE_ROOTFS)" DIONYSUSD_BIN="$(DIONYSUSD_BIN)" DIONYSUS_PROFILES_DIR="profiles" $(PVE_CONTROL_PLANE_INSTALL)
+
+pve-control-plane-host-install: pve-check scripts/install-pve-control-plane.sh
+	@$(STATUS) info "Installing Dionysus Ollama RAM control plane on this host"
+	@DIONYSUSD_BIN="$(DIONYSUSD_BIN)" $(PVE_CONTROL_PLANE_INSTALL) --host
 
 raspi-fetch: check-linux-tools $(RASPI_FRAGMENT) scripts/fetch-linux.sh
 	@$(STATUS) info "Fetching Raspberry Pi Linux ref $(RASPI_LINUX_REF)"

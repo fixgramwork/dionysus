@@ -16,11 +16,14 @@ Proxmox-style 관리 웹은 일반 Linux rootfs에 systemd service로 설치합�
 
 - `dionysus-pvedaemon.service`: localhost API daemon
 - `dionysus-pveproxy.service`: `0.0.0.0:8006` 관리 웹과 `/api2/json` API
+- `dionysus-network.service`: `/etc/dionysus/network.env` 기반 영구 Wi-Fi 설정
 - `dionysus-llm-swap.service`: Ollama 시작 전 dedicated swap backing store 준비
 
 Local LLM 최적화는 initramfs 안에서는 상태 확인 중심으로 동작합니다. 일반 Linux rootfs에서는
 `dionysus-llm-swap.service` 가 dedicated swap 파일을 만들고, PVE control plane이 Ollama 상태와
 KV-cache/swap 권장값을 `/api2/json` 및 웹 UI로 노출합니다.
+영구 Wi-Fi 설정은 initramfs가 아니라 일반 Linux rootfs의 `/etc/dionysus/network.env` 와
+`dionysus-network.service` 에서 처리합니다.
 
 ## 빌드 방법
 

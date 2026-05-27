@@ -17,7 +17,6 @@ RUN apt-get update \
         kmod \
         libelf-dev \
         libssl-dev \
-        perl \
         python3 \
         rsync \
         xz-utils \

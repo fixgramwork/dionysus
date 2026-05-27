@@ -86,6 +86,9 @@ Pi 부팅 후 initramfs의 `/init` 은 다음 순서로 실행됩니다.
 5. 실패해도 rescue shell로 진입한다.
 
 다른 NIC 이름을 써야 하면 kernel command line이나 init 환경에서 `DIONYSUS_NET_IFACE=<iface>` 를 넘겨야 합니다.
+영구 Wi-Fi 설정은 initramfs가 아니라 rootfs의 `/etc/dionysus/network.env` 와
+`dionysus-network.service` 에서 처리합니다. Raspberry Pi Wi-Fi를 쓰려면 rootfs에 `wpa_supplicant`,
+DHCP client, 그리고 보드에 맞는 Broadcom firmware가 있어야 합니다.
 
 ## 한계
 
@@ -93,7 +96,7 @@ Pi 부팅 후 initramfs의 `/init` 은 다음 순서로 실행됩니다.
 
 - root filesystem partition을 만들지 않는다.
 - kernel modules를 rootfs에 설치하지 않는다.
-- Wi-Fi firmware와 userspace 네트워크 관리자를 포함하지 않는다.
+- Wi-Fi firmware와 `wpa_supplicant` 같은 userspace 네트워크 도구를 직접 포함하지 않는다.
 - 보안 부팅, A/B 업데이트, 영속 설정 저장소를 제공하지 않는다.
 
 따라서 첫 목표는 "Pi에서 ARM64 Linux + Dionysus initramfs가 시작되고 rootfs에서 PVE control plane을 올릴 수 있는가" 입니다.

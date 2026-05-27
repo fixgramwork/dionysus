@@ -46,8 +46,15 @@
     }
 
     .toolbar {
+      align-items: center;
       display: flex;
       gap: 8px;
+    }
+
+    .refresh-state {
+      color: #cbd5e1;
+      min-width: 150px;
+      text-align: right;
     }
 
     button {
@@ -64,6 +71,22 @@
       background: linear-gradient(#3b82f6, #1d4ed8);
       border-color: #1d4ed8;
       color: #fff;
+    }
+
+    button.danger {
+      background: linear-gradient(#ef4444, #b91c1c);
+      border-color: #991b1b;
+      color: #fff;
+    }
+
+    .token-input {
+      background: #f8fafc;
+      border: 1px solid #64748b;
+      border-radius: 2px;
+      color: #111827;
+      font: inherit;
+      padding: 5px 8px;
+      width: 150px;
     }
 
     .layout {
@@ -155,6 +178,18 @@
       padding: 10px;
     }
 
+    .notice {
+      background: #fff7ed;
+      border-bottom: 1px solid #fed7aa;
+      color: var(--warn);
+      display: none;
+      padding: 8px 10px;
+    }
+
+    .notice.visible {
+      display: block;
+    }
+
     table {
       border-collapse: collapse;
       width: 100%;
@@ -192,9 +227,102 @@
       color: var(--muted);
     }
 
+    .mono {
+      font-family: Menlo, Consolas, monospace;
+    }
+
+    .nowrap {
+      white-space: nowrap;
+    }
+
+    .config-grid {
+      display: grid;
+      gap: 10px 12px;
+      grid-template-columns: repeat(4, minmax(150px, 1fr));
+      margin-bottom: 12px;
+    }
+
+    .form-section {
+      border-top: 1px solid #e5e7eb;
+      margin-top: 12px;
+      padding-top: 10px;
+    }
+
+    .form-section h3 {
+      color: var(--muted);
+      font-size: 12px;
+      margin: 0 0 8px;
+      text-transform: uppercase;
+    }
+
+    .field {
+      display: grid;
+      gap: 4px;
+      min-width: 0;
+    }
+
+    .field label {
+      color: var(--muted);
+      font-weight: 700;
+    }
+
+    .field input,
+    .field select {
+      border: 1px solid #aeb8c4;
+      border-radius: 2px;
+      font: inherit;
+      min-width: 0;
+      padding: 6px 7px;
+      width: 100%;
+    }
+
+    .check-row {
+      align-items: center;
+      display: flex;
+      gap: 7px;
+      min-height: 29px;
+    }
+
+    .check-row input {
+      height: 14px;
+      width: 14px;
+    }
+
+    .action-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 10px;
+    }
+
+    .console-output {
+      background: #0f172a;
+      border: 1px solid #020617;
+      color: #d1d5db;
+      font: 12px/1.5 Menlo, Consolas, monospace;
+      margin: 0;
+      max-height: 260px;
+      overflow: auto;
+      padding: 10px;
+      white-space: pre-wrap;
+    }
+
+    .console-info {
+      color: #93c5fd;
+    }
+
+    .console-warn {
+      color: #fbbf24;
+    }
+
+    .console-error {
+      color: #fca5a5;
+    }
+
     @media (max-width: 900px) {
       .layout,
-      .panes {
+      .panes,
+      .config-grid {
         grid-template-columns: 1fr;
       }
 
@@ -208,8 +336,13 @@
   <header class="topbar">
     <div class="brand">Dionysus PVE Manager</div>
     <div class="toolbar">
+      <span id="refresh-state" class="refresh-state">Loading...</span>
+      <input id="api-token" class="token-input" type="password" placeholder="API token" autocomplete="off">
+      <button id="save-token">Save Token</button>
+      <button id="clear-token">Clear</button>
       <button id="refresh">Refresh</button>
-      <button id="optimize" class="primary">Apply Ollama KV-cache Profile</button>
+      <button id="preview-optimize">Preview KV-Cache</button>
+      <button id="apply-optimize" class="danger">Apply KV-Cache</button>
     </div>
   </header>
 
@@ -221,6 +354,7 @@
       <div class="tree-node">　▸ LXC</div>
       <div class="tree-node">　▸ Ollama</div>
       <div class="tree-node">　▸ Swap</div>
+      <div class="tree-node">　▸ Network</div>
       <div class="tree-node">　▸ Services</div>
     </aside>
 
@@ -231,6 +365,7 @@
         <div class="tab">Services</div>
         <div class="tab">Tasks</div>
       </nav>
+      <div id="notice" class="notice"></div>
 
       <div class="panes">
         <section class="panel">
@@ -243,11 +378,248 @@
         </section>
 
         <section class="panel">
-          <h2>Ollama KV-cache Posture</h2>
+          <h2>Control Plane</h2>
+          <div class="panel-body">
+            <table>
+              <tbody id="control-plane-status"></tbody>
+            </table>
+          </div>
+        </section>
+
+        <section class="panel">
+          <h2>Local LLM Platform</h2>
+          <div class="panel-body">
+            <table>
+              <tbody id="platform-status"></tbody>
+            </table>
+          </div>
+        </section>
+
+        <section class="panel">
+          <h2>Ollama Runtime</h2>
           <div class="panel-body">
             <table>
               <tbody id="ollama-status"></tbody>
             </table>
+          </div>
+        </section>
+
+        <section class="panel wide">
+          <h2>Network</h2>
+          <div class="panel-body">
+            <table>
+              <tbody id="network-status"></tbody>
+            </table>
+
+            <div class="form-section">
+              <h3>Mode</h3>
+              <div class="config-grid">
+                <label class="check-row">
+                  <input id="net-enabled" type="checkbox">
+                  <span>Managed network enabled</span>
+                </label>
+                <div class="field">
+                  <label for="net-mode">Mode</label>
+                  <select id="net-mode">
+                    <option value="none">None</option>
+                    <option value="lan">LAN</option>
+                    <option value="wifi">Wi-Fi</option>
+                  </select>
+                </div>
+                <div class="field">
+                  <label for="net-dhcp-client">DHCP client</label>
+                  <select id="net-dhcp-client">
+                    <option value="auto">Auto</option>
+                    <option value="udhcpc">udhcpc</option>
+                    <option value="dhclient">dhclient</option>
+                    <option value="none">None</option>
+                  </select>
+                </div>
+                <div class="field">
+                  <label for="net-resolv-conf">resolv.conf</label>
+                  <input id="net-resolv-conf" type="text" autocomplete="off">
+                </div>
+              </div>
+            </div>
+
+            <div class="form-section">
+              <h3>LAN</h3>
+              <div class="config-grid">
+                <label class="check-row">
+                  <input id="net-lan-enabled" type="checkbox">
+                  <span>LAN enabled</span>
+                </label>
+                <div class="field">
+                  <label for="net-lan-iface">Interface</label>
+                  <input id="net-lan-iface" type="text" autocomplete="off">
+                </div>
+                <div class="field">
+                  <label for="net-lan-method">IPv4 method</label>
+                  <select id="net-lan-method">
+                    <option value="dhcp">DHCP</option>
+                    <option value="static">Static</option>
+                    <option value="none">None</option>
+                  </select>
+                </div>
+                <div class="field">
+                  <label for="net-lan-address">Address</label>
+                  <input id="net-lan-address" type="text" placeholder="192.168.1.10/24" autocomplete="off">
+                </div>
+                <div class="field">
+                  <label for="net-lan-gateway">Gateway</label>
+                  <input id="net-lan-gateway" type="text" autocomplete="off">
+                </div>
+                <div class="field">
+                  <label for="net-lan-dns">DNS</label>
+                  <input id="net-lan-dns" type="text" placeholder="1.1.1.1 8.8.8.8" autocomplete="off">
+                </div>
+              </div>
+            </div>
+
+            <div class="form-section">
+              <h3>Wi-Fi</h3>
+              <div class="config-grid">
+                <label class="check-row">
+                  <input id="net-wifi-enabled" type="checkbox">
+                  <span>Wi-Fi enabled</span>
+                </label>
+                <div class="field">
+                  <label for="net-wifi-iface">Interface</label>
+                  <input id="net-wifi-iface" type="text" autocomplete="off">
+                </div>
+                <div class="field">
+                  <label for="net-wifi-country">Country</label>
+                  <input id="net-wifi-country" type="text" maxlength="2" autocomplete="off">
+                </div>
+                <label class="check-row">
+                  <input id="net-wifi-scan" type="checkbox">
+                  <span>Hidden SSID scan</span>
+                </label>
+                <div class="field">
+                  <label for="net-wifi-ssid">SSID</label>
+                  <input id="net-wifi-ssid" type="text" autocomplete="off">
+                </div>
+                <div class="field">
+                  <label for="net-wifi-psk">Password</label>
+                  <input id="net-wifi-psk" type="password" placeholder="leave blank to keep stored value" autocomplete="new-password">
+                </div>
+                <label class="check-row">
+                  <input id="net-wifi-clear-psk" type="checkbox">
+                  <span>Clear stored password</span>
+                </label>
+                <div class="field">
+                  <label for="net-wifi-method">IPv4 method</label>
+                  <select id="net-wifi-method">
+                    <option value="dhcp">DHCP</option>
+                    <option value="static">Static</option>
+                    <option value="none">None</option>
+                  </select>
+                </div>
+                <div class="field">
+                  <label for="net-wifi-address">Address</label>
+                  <input id="net-wifi-address" type="text" placeholder="192.168.1.20/24" autocomplete="off">
+                </div>
+                <div class="field">
+                  <label for="net-wifi-gateway">Gateway</label>
+                  <input id="net-wifi-gateway" type="text" autocomplete="off">
+                </div>
+                <div class="field">
+                  <label for="net-wifi-dns">DNS</label>
+                  <input id="net-wifi-dns" type="text" placeholder="1.1.1.1 8.8.8.8" autocomplete="off">
+                </div>
+                <div class="field">
+                  <label for="net-dhcp-tries">DHCP tries</label>
+                  <input id="net-dhcp-tries" type="number" min="1" step="1">
+                </div>
+                <div class="field">
+                  <label for="net-dhcp-timeout">DHCP timeout</label>
+                  <input id="net-dhcp-timeout" type="number" min="1" step="1">
+                </div>
+              </div>
+              <div class="action-row">
+                <button id="preview-network">Preview Network</button>
+                <button id="save-network" class="primary">Save Network</button>
+                <button id="apply-network" class="danger">Save & Apply</button>
+              </div>
+            </div>
+
+            <div class="form-section">
+              <h3>Interfaces</h3>
+              <table>
+                <thead>
+                  <tr><th>Name</th><th>State</th><th>Address</th><th>MAC</th><th>MTU</th><th>RX</th><th>TX</th></tr>
+                </thead>
+                <tbody id="network-interfaces"></tbody>
+              </table>
+            </div>
+
+            <div class="form-section">
+              <h3>Network Result</h3>
+              <table>
+                <thead>
+                  <tr><th>Action</th><th>Status</th><th>Details</th></tr>
+                </thead>
+                <tbody id="network-result"></tbody>
+              </table>
+            </div>
+          </div>
+        </section>
+
+        <section class="panel wide">
+          <h2>Loaded Models</h2>
+          <div class="panel-body">
+            <table>
+              <thead>
+                <tr><th>Name</th><th>Size</th><th>VRAM</th><th>Context</th><th>Expires</th></tr>
+              </thead>
+              <tbody id="loaded-models"></tbody>
+            </table>
+          </div>
+        </section>
+
+        <section class="panel wide">
+          <h2>Ollama Models</h2>
+          <div class="panel-body">
+            <table>
+              <thead>
+                <tr><th>Name</th><th>Size</th><th>Digest</th><th>Modified</th></tr>
+              </thead>
+              <tbody id="ollama-models"></tbody>
+            </table>
+          </div>
+        </section>
+
+        <section class="panel wide">
+          <h2>Ollama Processes</h2>
+          <div class="panel-body">
+            <table>
+              <thead>
+                <tr><th>PID</th><th>Name</th><th>RSS</th><th>Peak RSS</th><th>Swap</th><th>Command</th></tr>
+              </thead>
+              <tbody id="ollama-processes"></tbody>
+            </table>
+          </div>
+        </section>
+
+        <section class="panel wide">
+          <h2>KV-Cache Optimization</h2>
+          <div class="panel-body">
+            <table>
+              <tbody id="kv-cache-status"></tbody>
+            </table>
+            <div class="action-row">
+              <button id="preview-kv-cache">Preview KV-Cache</button>
+              <button id="apply-kv-cache" class="danger">Apply KV-Cache</button>
+            </div>
+            <div class="form-section">
+              <h3>Profile Targets</h3>
+              <table>
+                <thead>
+                  <tr><th>Setting</th><th>Current</th><th>Target</th><th>Status</th><th>Reason</th></tr>
+                </thead>
+                <tbody id="kv-cache-targets"></tbody>
+              </table>
+            </div>
           </div>
         </section>
 
@@ -260,6 +632,34 @@
               </thead>
               <tbody id="recommendations"></tbody>
             </table>
+          </div>
+        </section>
+
+        <section class="panel wide">
+          <h2>RAM History</h2>
+          <div class="panel-body">
+            <table>
+              <thead>
+                <tr><th>Time</th><th>Memory Used</th><th>Swap Used</th><th>Ollama RSS</th><th>Ollama Swap</th><th>Loaded</th></tr>
+              </thead>
+              <tbody id="history"></tbody>
+            </table>
+          </div>
+        </section>
+
+        <section class="panel wide">
+          <h2>Web Console</h2>
+          <div class="panel-body">
+            <table>
+              <thead>
+                <tr><th>Setting</th><th>Current</th><th>Target</th><th>Status</th><th>Error</th></tr>
+              </thead>
+              <tbody id="action-results"></tbody>
+            </table>
+            <div class="form-section">
+              <h3>Console</h3>
+              <pre id="web-console" class="console-output"></pre>
+            </div>
           </div>
         </section>
 
@@ -279,6 +679,29 @@
   </main>
 
   <script>
+    const tokenKey = 'dionysus.pve.token';
+    const statusLabels = {
+      'api-online': 'API online',
+      'process-only': 'Process detected',
+      'service-active': 'Service active',
+      'service-inactive': 'Service inactive',
+      'service-failed': 'Service failed',
+      'not-detected': 'Not detected'
+    };
+    let networkDirty = false;
+    const consoleLines = [];
+
+    function escapeHtml(value) {
+      const text = value === null || value === undefined ? '' : value;
+      return String(text).replace(/[&<>"']/g, (char) => ({
+        '&': '&amp;',
+        '<': '&lt;',
+        '>': '&gt;',
+        '"': '&quot;',
+        "'": '&#39;'
+      }[char]));
+    }
+
     function bytes(value) {
       if (!value) return '0 B';
       const units = ['B', 'KiB', 'MiB', 'GiB', 'TiB'];
@@ -292,74 +715,580 @@
     }
 
     function row(label, value) {
-      return `<tr><th>${label}</th><td>${value}</td></tr>`;
+      return `<tr><th>${escapeHtml(label)}</th><td>${value}</td></tr>`;
+    }
+
+    function textRow(label, value) {
+      return row(label, escapeHtml(value || '--'));
     }
 
     function serviceClass(state) {
-      if (state === 'active' || state === 'online') return 'state-ok';
-      if (state === 'inactive' || state === 'unknown') return 'state-warn';
+      if (state === 'active' || state === 'online' || state === 'up' || state === 'api-online' || state === 'service-active') return 'state-ok';
+      if (state === 'inactive' || state === 'unknown' || state === 'down') return 'state-warn';
+      if (state === 'process-only' || state === 'service-inactive' || state === 'not-detected') return 'state-warn';
       return 'state-bad';
     }
 
-    async function api(path, init) {
-      const response = await fetch(path, init);
+    function badge(label, state) {
+      return `<span class="${serviceClass(state)}">${escapeHtml(label)}</span>`;
+    }
+
+    function sources(value) {
+      return (value || []).length ? value.map(escapeHtml).join(', ') : '--';
+    }
+
+    function shortDigest(value) {
+      if (!value) return '--';
+      return value.length > 18 ? `${value.slice(0, 18)}...` : value;
+    }
+
+    function percent(used, total) {
+      if (!total) return '0.0%';
+      return `${((used / total) * 100).toFixed(1)}%`;
+    }
+
+    function compactKernel(os) {
+      const kernel = (os || {}).kernel || {};
+      const name = kernel.name || '--';
+      const release = kernel.release || '--';
+      const arch = kernel.architecture || '--';
+      return `${name} ${release} (${arch})`;
+    }
+
+    function appendConsole(level, message) {
+      const time = new Date().toLocaleTimeString();
+      consoleLines.push({ time, level, message });
+      while (consoleLines.length > 160) consoleLines.shift();
+      renderConsole();
+    }
+
+    function appendConsoleBatch(lines) {
+      (lines || []).forEach((line) => appendConsole(line.level || 'info', line.message || ''));
+    }
+
+    function renderConsole() {
+      const output = document.getElementById('web-console');
+      if (!output) return;
+      output.innerHTML = consoleLines.map((line) => {
+        const css = line.level === 'error' ? 'console-error' : line.level === 'warn' ? 'console-warn' : 'console-info';
+        return `<span class="${css}">[${escapeHtml(line.time)}] ${escapeHtml(line.level.toUpperCase())}</span> ${escapeHtml(line.message)}`;
+      }).join('\n');
+      output.scrollTop = output.scrollHeight;
+    }
+
+    function token() {
+      return window.sessionStorage.getItem(tokenKey) || '';
+    }
+
+    function setToken(value) {
+      if (value) {
+        window.sessionStorage.setItem(tokenKey, value);
+      } else {
+        window.sessionStorage.removeItem(tokenKey);
+      }
+      document.getElementById('api-token').value = value || '';
+    }
+
+    function setNotice(message) {
+      const notice = document.getElementById('notice');
+      notice.textContent = message || '';
+      notice.classList.toggle('visible', Boolean(message));
+    }
+
+    function setRefreshState(message, className = '') {
+      const state = document.getElementById('refresh-state');
+      state.textContent = message;
+      state.className = `refresh-state ${className}`.trim();
+    }
+
+    async function api(path, init = {}) {
+      const headers = Object.assign({}, init.headers || {});
+      if (token()) headers.Authorization = `Bearer ${token()}`;
+      const response = await fetch(path, Object.assign({}, init, { headers }));
       const payload = await response.json();
       if (!response.ok) {
-        throw new Error(JSON.stringify(payload.errors || payload));
+        const message = response.status === 401 ? 'API token required or invalid' : JSON.stringify(payload.errors || payload);
+        throw new Error(message);
       }
       return payload.data;
     }
 
+    function fieldValue(id) {
+      return document.getElementById(id).value.trim();
+    }
+
+    function fieldChecked(id) {
+      return document.getElementById(id).checked;
+    }
+
+    function setField(id, value) {
+      document.getElementById(id).value = value || '';
+    }
+
+    function setChecked(id, value) {
+      document.getElementById(id).checked = Boolean(value);
+    }
+
+    function renderNetwork(network) {
+      const config = network.config || {};
+      const service = network.service || {};
+      const mode = config.mode || 'none';
+      const serviceState = service.state || 'unknown';
+      const wifi = config.wifi || {};
+      const lan = config.lan || {};
+
+      document.getElementById('network-status').innerHTML = [
+        row('Service', badge(`${service.name || 'dionysus-network'}: ${serviceState}`, serviceState)),
+        textRow('Mode', mode),
+        textRow('Managed network', config.networkEnabled === false ? 'disabled' : 'enabled'),
+        textRow('LAN', `${lan.enabled ? 'enabled' : 'disabled'} on ${lan.iface || 'eth0'}`),
+        textRow('Wi-Fi', `${wifi.enabled ? 'enabled' : 'disabled'} on ${wifi.iface || 'wlan0'}${wifi.ssid ? ` (${wifi.ssid})` : ''}`),
+        textRow('Wi-Fi secret', wifi.pskStored || wifi.pskHashStored ? 'stored' : 'not stored'),
+        textRow('Config path', config.path || '--'),
+        textRow('Routes', network.routes || '--'),
+        textRow('resolv.conf', network.resolvConf || '--')
+      ].join('');
+
+      document.getElementById('network-interfaces').innerHTML = (network.interfaces || []).map((iface) => `
+        <tr>
+          <td class="mono">${escapeHtml(iface.name || '--')}</td>
+          <td class="${serviceClass(iface.operstate || 'unknown')}">${escapeHtml(iface.operstate || '--')}</td>
+          <td class="mono">${escapeHtml((iface.addresses || []).join(', ') || '--')}</td>
+          <td class="mono">${escapeHtml(iface.address || '--')}</td>
+          <td>${escapeHtml(iface.mtu || '--')}</td>
+          <td class="nowrap">${bytes(iface.rxBytes || 0)}</td>
+          <td class="nowrap">${bytes(iface.txBytes || 0)}</td>
+        </tr>
+      `).join('') || '<tr><td colspan="7" class="muted">No network interfaces detected.</td></tr>';
+
+      populateNetworkForm(config);
+    }
+
+    function populateNetworkForm(config) {
+      if (networkDirty) return;
+      const lan = config.lan || {};
+      const lanIpv4 = lan.ipv4 || {};
+      const wifi = config.wifi || {};
+      const wifiIpv4 = wifi.ipv4 || {};
+      const dhcp = config.dhcp || {};
+
+      setChecked('net-enabled', config.networkEnabled !== false);
+      setField('net-mode', config.mode || 'none');
+      setField('net-dhcp-client', dhcp.client || 'auto');
+      setField('net-resolv-conf', config.resolvConf || '/etc/resolv.conf');
+
+      setChecked('net-lan-enabled', lan.enabled);
+      setField('net-lan-iface', lan.iface || 'eth0');
+      setField('net-lan-method', lanIpv4.method || 'dhcp');
+      setField('net-lan-address', lanIpv4.address || '');
+      setField('net-lan-gateway', lanIpv4.gateway || '');
+      setField('net-lan-dns', lanIpv4.dns || '');
+
+      setChecked('net-wifi-enabled', wifi.enabled);
+      setField('net-wifi-iface', wifi.iface || 'wlan0');
+      setField('net-wifi-country', wifi.country || 'KR');
+      setField('net-wifi-ssid', wifi.ssid || '');
+      setChecked('net-wifi-scan', wifi.scanSsid);
+      setField('net-wifi-method', wifiIpv4.method || 'dhcp');
+      setField('net-wifi-address', wifiIpv4.address || '');
+      setField('net-wifi-gateway', wifiIpv4.gateway || '');
+      setField('net-wifi-dns', wifiIpv4.dns || '');
+      setField('net-dhcp-tries', dhcp.tries || '6');
+      setField('net-dhcp-timeout', dhcp.timeout || '5');
+      setField('net-wifi-psk', '');
+      setChecked('net-wifi-clear-psk', false);
+      document.getElementById('net-wifi-psk').placeholder = wifi.pskStored || wifi.pskHashStored
+        ? 'stored; leave blank to keep'
+        : 'optional for open networks';
+      syncPasswordControl();
+    }
+
+    function networkPayload(apply, dryRun) {
+      let pskAction = 'preserve';
+      if (fieldChecked('net-wifi-clear-psk')) {
+        pskAction = 'clear';
+      } else if (fieldValue('net-wifi-psk')) {
+        pskAction = 'set';
+      }
+
+      return {
+        dryRun,
+        apply,
+        networkEnabled: fieldChecked('net-enabled'),
+        mode: fieldValue('net-mode'),
+        lan: {
+          enabled: fieldChecked('net-lan-enabled'),
+          iface: fieldValue('net-lan-iface'),
+          ipv4: {
+            method: fieldValue('net-lan-method'),
+            address: fieldValue('net-lan-address'),
+            gateway: fieldValue('net-lan-gateway'),
+            dns: fieldValue('net-lan-dns')
+          }
+        },
+        wifi: {
+          enabled: fieldChecked('net-wifi-enabled'),
+          iface: fieldValue('net-wifi-iface'),
+          country: fieldValue('net-wifi-country'),
+          ssid: fieldValue('net-wifi-ssid'),
+          scanSsid: fieldChecked('net-wifi-scan'),
+          pskAction,
+          psk: fieldValue('net-wifi-psk'),
+          pskHash: '',
+          ipv4: {
+            method: fieldValue('net-wifi-method'),
+            address: fieldValue('net-wifi-address'),
+            gateway: fieldValue('net-wifi-gateway'),
+            dns: fieldValue('net-wifi-dns')
+          }
+        },
+        dhcp: {
+          client: fieldValue('net-dhcp-client') || 'auto',
+          tries: fieldValue('net-dhcp-tries') || '6',
+          timeout: fieldValue('net-dhcp-timeout') || '5'
+        },
+        resolvConf: fieldValue('net-resolv-conf') || '/etc/resolv.conf'
+      };
+    }
+
+    function renderNetworkResult(result = {}) {
+      const rows = [];
+      if (result.config) {
+        rows.push({
+          action: result.dryRun ? 'Preview config' : 'Save config',
+          status: result.dryRun ? 'dry-run' : (result.written ? 'written' : 'skipped'),
+          details: `${result.config.mode || 'none'} in ${result.config.path || '--'}`
+        });
+      }
+      if (result.applyResult) {
+        const apply = result.applyResult;
+        const details = [apply.command, apply.stdout, apply.stderr, apply.error]
+          .filter(Boolean)
+          .join(' ');
+        rows.push({
+          action: 'Apply service',
+          status: apply.status || '--',
+          details
+        });
+      }
+
+      document.getElementById('network-result').innerHTML = rows.map((item) => `
+        <tr>
+          <td>${escapeHtml(item.action)}</td>
+          <td class="${item.status === 'failed' ? 'state-bad' : item.status === 'dry-run' ? 'state-warn' : 'state-ok'}">${escapeHtml(item.status)}</td>
+          <td class="mono">${escapeHtml(item.details || '')}</td>
+        </tr>
+      `).join('') || '<tr><td colspan="3" class="muted">No network action has run.</td></tr>';
+    }
+
+    function renderKvCache(kvCache = {}) {
+      const swap = kvCache.swap || {};
+      const service = swap.service || {};
+      const ready = Boolean(kvCache.ready);
+      document.getElementById('kv-cache-status').innerHTML = [
+        row('Profile', badge(kvCache.profile || 'ollama-kv-cache', ready ? 'active' : 'unknown')),
+        textRow('State', ready ? 'ready' : `${kvCache.pendingCount || 0} pending, ${kvCache.missingCount || 0} missing`),
+        textRow('Swap', `${bytes(swap.used || 0)} / ${bytes(swap.total || 0)} (${percent(swap.used || 0, swap.total || 0)})`),
+        textRow('Swap service', `${service.name || 'dionysus-llm-swap'}: ${service.state || 'unknown'}`),
+        textRow('Ready targets', `${kvCache.readyCount || 0} / ${(kvCache.targets || []).length}`)
+      ].join('');
+
+      document.getElementById('kv-cache-targets').innerHTML = (kvCache.targets || []).map((target) => `
+        <tr>
+          <td class="mono">${escapeHtml(target.label || target.id || '--')}</td>
+          <td class="mono">${escapeHtml(target.current || '--')}</td>
+          <td class="mono">${escapeHtml(target.target || '--')}</td>
+          <td class="${target.status === 'ready' ? 'state-ok' : target.status === 'missing' ? 'state-bad' : 'state-warn'}">${escapeHtml(target.status || '--')}</td>
+          <td>${escapeHtml(target.reason || '')}</td>
+        </tr>
+      `).join('') || '<tr><td colspan="5" class="muted">No KV-cache profile targets reported.</td></tr>';
+    }
+
+    async function saveNetwork(apply, dryRun) {
+      try {
+        const result = await api('/api2/json/nodes/localhost/network/config', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(networkPayload(apply, dryRun))
+        });
+        renderNetworkResult(result);
+        appendConsole('info', `network ${dryRun ? 'preview' : apply ? 'save-and-apply' : 'save'} completed`);
+        if (!dryRun) {
+          networkDirty = false;
+          setField('net-wifi-psk', '');
+          setChecked('net-wifi-clear-psk', false);
+          populateNetworkForm(result.config || {});
+        }
+        await refresh();
+        setNotice(dryRun ? 'Network preview completed.' : apply ? 'Network saved and apply requested.' : 'Network configuration saved.');
+      } catch (error) {
+        appendConsole('error', `network action failed: ${error.message}`);
+        setNotice(`Network action failed: ${error.message}`);
+        setRefreshState('Action failed', 'state-bad');
+        console.error(error);
+      }
+    }
+
+    function syncModeChecks() {
+      const mode = fieldValue('net-mode');
+      if (mode === 'lan') {
+        setChecked('net-lan-enabled', true);
+        setChecked('net-wifi-enabled', false);
+      } else if (mode === 'wifi') {
+        setChecked('net-lan-enabled', false);
+        setChecked('net-wifi-enabled', true);
+      }
+    }
+
+    function syncPasswordControl() {
+      const clear = fieldChecked('net-wifi-clear-psk');
+      const password = document.getElementById('net-wifi-psk');
+      password.disabled = clear;
+      if (clear) password.value = '';
+    }
+
     async function refresh() {
-      const [node, ollama, services] = await Promise.all([
+      setRefreshState('Refreshing...');
+      const [node, ollama, services, history, network] = await Promise.all([
         api('/api2/json/nodes/localhost/status'),
         api('/api2/json/nodes/localhost/ollama/status'),
-        api('/api2/json/nodes/localhost/services')
+        api('/api2/json/nodes/localhost/services'),
+        api('/api2/json/nodes/localhost/ollama/history?limit=120'),
+        api('/api2/json/nodes/localhost/network/status')
       ]);
 
+      const os = node.os || {};
+      const controlPlane = node.controlPlane || {};
       document.getElementById('node-status').innerHTML = [
-        row('Node', node.node),
-        row('Uptime', `${Math.floor(node.uptime)}s`),
-        row('Memory used', `${bytes(node.memory.used)} / ${bytes(node.memory.total)}`),
-        row('Swap used', `${bytes(node.swap.used)} / ${bytes(node.swap.total)}`),
-        row('Load', (node.loadavg || []).join(' '))
+        textRow('Node', node.node),
+        textRow('Hostname', os.hostname || node.node),
+        textRow('Operating system', os.prettyName || os.name || '--'),
+        textRow('Kernel', compactKernel(os)),
+        textRow('Uptime', `${Math.floor(node.uptime)}s`),
+        textRow('Memory used', `${bytes(node.memory.used)} / ${bytes(node.memory.total)} (${percent(node.memory.used, node.memory.total)})`),
+        textRow('Memory available', bytes(node.memory.available)),
+        textRow('Swap used', `${bytes(node.swap.used)} / ${bytes(node.swap.total)} (${percent(node.swap.used, node.swap.total)})`),
+        textRow('Load', (node.loadavg || []).join(' '))
+      ].join('');
+
+      document.getElementById('control-plane-status').innerHTML = [
+        row('Runtime', badge(controlPlane.runtimeMode || 'unknown', controlPlane.runtimeMode === 'target-os' ? 'active' : 'unknown')),
+        textRow('Web listener', controlPlane.listen || '--'),
+        textRow('Web root', controlPlane.wwwRoot || '--'),
+        textRow('API', `${controlPlane.api || '--'} on ${controlPlane.stack || '--'}`),
+        textRow('Metrics DB', controlPlane.metricsDb || '--'),
+        textRow('Network config', controlPlane.networkConfig || '--'),
+        textRow('Token auth', controlPlane.tokenAuth ? 'enabled' : 'disabled')
+      ].join('');
+
+      const platform = ollama.platform || {};
+      const ollamaService = ollama.service || {};
+      const platformState = platform.state || 'not-detected';
+      const platformLabel = statusLabels[platformState] || platformState;
+      document.getElementById('platform-status').innerHTML = [
+        row('Platform', badge(platform.name || 'Ollama', platformState)),
+        row('Detected', platform.detected ? badge(platformLabel, platformState) : badge('No', 'not-detected')),
+        textRow('Detection sources', sources(platform.detectionSources)),
+        textRow('API base', platform.apiBase || ollama.apiBase),
+        textRow('Version', platform.version || ollama.version || '--'),
+        textRow('Service', `${ollamaService.name || 'ollama'}: ${ollamaService.state || 'unknown'}`)
       ].join('');
 
       document.getElementById('ollama-status').innerHTML = [
         row('API', ollama.apiReachable ? '<span class="state-ok">reachable</span>' : '<span class="state-warn">unreachable</span>'),
-        row('Models', String((ollama.models || []).length)),
-        row('Processes', String((ollama.processes || []).length)),
-        row('Swappiness', ollama.kernel.swappiness || '--'),
-        row('Page cluster', ollama.kernel.pageCluster || '--'),
-        row('THP', ollama.kernel.transparentHugepage || '--')
+        textRow('Models', String((ollama.models || []).length)),
+        textRow('Loaded models', String((ollama.loadedModels || []).length)),
+        textRow('Processes', String((ollama.processes || []).length)),
+        textRow('Process RSS total', bytes((ollama.runtime || {}).processRss || 0)),
+        textRow('Process swap total', bytes((ollama.runtime || {}).processSwap || 0)),
+        textRow('Loaded model size', bytes((ollama.loadedModelMemory || {}).size || 0)),
+        textRow('Loaded model VRAM', bytes((ollama.loadedModelMemory || {}).sizeVram || 0)),
+        textRow('Loaded model API', ollama.loadedModelsReachable ? 'reachable' : (ollama.loadedModelsError || '--')),
+        textRow('Swappiness', ollama.kernel.swappiness || '--'),
+        textRow('Page cluster', ollama.kernel.pageCluster || '--'),
+        textRow('THP', ollama.kernel.transparentHugepage || '--'),
+        textRow('API status', ollama.apiStatus ? String(ollama.apiStatus) : '--'),
+        textRow('Last API error', ollama.error || '--')
       ].join('');
+
+      renderKvCache(ollama.kvCache || {});
+      renderNetwork(network);
+
+      document.getElementById('loaded-models').innerHTML = (ollama.loadedModels || []).map((model) => `
+        <tr>
+          <td>${escapeHtml(model.name || model.model || '--')}</td>
+          <td class="nowrap">${bytes(model.size || 0)}</td>
+          <td class="nowrap">${bytes(model.sizeVram || 0)}</td>
+          <td class="nowrap">${escapeHtml(model.contextLength || '--')}</td>
+          <td>${escapeHtml(model.expiresAt || '--')}</td>
+        </tr>
+      `).join('') || '<tr><td colspan="5" class="muted">No loaded Ollama models detected.</td></tr>';
+
+      document.getElementById('ollama-models').innerHTML = (ollama.models || []).map((model) => `
+        <tr>
+          <td>${escapeHtml(model.name || '--')}</td>
+          <td class="nowrap">${bytes(model.size || 0)}</td>
+          <td class="mono">${escapeHtml(shortDigest(model.digest || ''))}</td>
+          <td>${escapeHtml(model.modifiedAt || '--')}</td>
+        </tr>
+      `).join('') || '<tr><td colspan="4" class="muted">No Ollama models detected.</td></tr>';
+
+      document.getElementById('ollama-processes').innerHTML = (ollama.processes || []).map((process) => `
+        <tr>
+          <td class="mono">${escapeHtml(process.pid)}</td>
+          <td>${escapeHtml(process.name || '--')}</td>
+          <td class="nowrap">${bytes(process.rss || 0)}</td>
+          <td class="nowrap">${bytes(process.peakRss || 0)}</td>
+          <td class="nowrap">${bytes(process.swap || 0)}</td>
+          <td class="mono">${escapeHtml(process.command || '--')}</td>
+        </tr>
+      `).join('') || '<tr><td colspan="6" class="muted">No Ollama process detected.</td></tr>';
+
+      const severityClass = {
+        warning: 'state-warn',
+        error: 'state-bad',
+        info: 'muted'
+      };
 
       document.getElementById('recommendations').innerHTML = (ollama.recommendations || []).map((item) => `
         <tr>
-          <td class="${item.severity === 'warning' ? 'state-warn' : 'muted'}">${item.severity}</td>
-          <td>${item.text}</td>
-          <td>${item.action}</td>
+          <td class="${severityClass[item.severity] || 'muted'}">${escapeHtml(item.severity || 'info')}</td>
+          <td>${escapeHtml(item.text || '')}</td>
+          <td>${escapeHtml(item.action || '')}</td>
         </tr>
       `).join('') || '<tr><td colspan="3" class="muted">No recommendations.</td></tr>';
 
       document.getElementById('services').innerHTML = (services || []).map((service) => `
-        <tr><td>${service.name}</td><td class="${serviceClass(service.state)}">${service.state}</td></tr>
+        <tr><td>${escapeHtml(service.name)}</td><td class="${serviceClass(service.state)}">${escapeHtml(service.state)}</td></tr>
       `).join('');
+
+      document.getElementById('history').innerHTML = (history || []).map((sample) => {
+        const memory = sample.memory || {};
+        const swap = sample.swap || {};
+        const ollama = sample.ollama || {};
+        return `
+          <tr>
+            <td>${escapeHtml(new Date((sample.collectedAt || 0) * 1000).toLocaleTimeString())}</td>
+            <td class="nowrap">${bytes(memory.used || 0)} / ${bytes(memory.total || 0)}</td>
+            <td class="nowrap">${bytes(swap.used || 0)} / ${bytes(swap.total || 0)}</td>
+            <td class="nowrap">${bytes(ollama.processRss || 0)}</td>
+            <td class="nowrap">${bytes(ollama.processSwap || 0)}</td>
+            <td class="nowrap">${escapeHtml(ollama.loadedModelCount || 0)}</td>
+          </tr>
+        `;
+      }).join('') || '<tr><td colspan="6" class="muted">No RAM history recorded yet.</td></tr>';
+
+      setNotice('');
+      setRefreshState(`Updated ${new Date().toLocaleTimeString()}`);
     }
 
-    async function optimize() {
-      await api('/api2/json/nodes/localhost/ollama/optimize', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({})
+    async function refreshWithNotice() {
+      try {
+        await refresh();
+      } catch (error) {
+        appendConsole('error', `refresh failed: ${error.message}`);
+        setNotice(`Refresh failed: ${error.message}`);
+        setRefreshState('Refresh failed', 'state-bad');
+        console.error(error);
+      }
+    }
+
+    function renderActionResult(result) {
+      document.getElementById('action-results').innerHTML = (result.writes || []).map((write) => `
+        <tr>
+          <td class="mono">${escapeHtml(write.label || write.path || '--')}</td>
+          <td class="mono">${escapeHtml(write.current || '--')}</td>
+          <td class="mono">${escapeHtml(write.value || '--')}</td>
+          <td class="${write.status === 'failed' ? 'state-bad' : write.status === 'skipped' ? 'state-warn' : 'state-ok'}">${escapeHtml(write.status || '--')}</td>
+          <td>${escapeHtml(write.error || '')}</td>
+        </tr>
+      `).join('') || '<tr><td colspan="5" class="muted">No optimization action has run.</td></tr>';
+    }
+
+    async function optimize(dryRun) {
+      try {
+        appendConsole('info', `ollama-kv-cache ${dryRun ? 'preview requested' : 'apply requested'}`);
+        const result = await api('/api2/json/nodes/localhost/ollama/optimize', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ dryRun })
+        });
+        renderActionResult(result);
+        renderKvCache(result.after || {});
+        appendConsoleBatch(result.console || []);
+        await refresh();
+        setNotice(dryRun ? 'KV-cache preview completed.' : 'KV-cache profile applied.');
+      } catch (error) {
+        appendConsole('error', `ollama-kv-cache failed: ${error.message}`);
+        setNotice(`KV-cache optimization failed: ${error.message}`);
+        setRefreshState('Action failed', 'state-bad');
+        console.error(error);
+      }
+    }
+
+    setToken(token());
+    document.getElementById('save-token').addEventListener('click', () => {
+      setToken(document.getElementById('api-token').value.trim());
+      refreshWithNotice();
+    });
+    document.getElementById('clear-token').addEventListener('click', () => {
+      setToken('');
+      refreshWithNotice();
+    });
+    document.getElementById('refresh').addEventListener('click', refreshWithNotice);
+    document.getElementById('preview-optimize').addEventListener('click', () => optimize(true));
+    document.getElementById('apply-optimize').addEventListener('click', () => optimize(false));
+    document.getElementById('preview-kv-cache').addEventListener('click', () => optimize(true));
+    document.getElementById('apply-kv-cache').addEventListener('click', () => optimize(false));
+    document.getElementById('preview-network').addEventListener('click', () => saveNetwork(false, true));
+    document.getElementById('save-network').addEventListener('click', () => saveNetwork(false, false));
+    document.getElementById('apply-network').addEventListener('click', () => saveNetwork(true, false));
+    [
+      'net-enabled',
+      'net-mode',
+      'net-dhcp-client',
+      'net-resolv-conf',
+      'net-lan-enabled',
+      'net-lan-iface',
+      'net-lan-method',
+      'net-lan-address',
+      'net-lan-gateway',
+      'net-lan-dns',
+      'net-wifi-enabled',
+      'net-wifi-iface',
+      'net-wifi-country',
+      'net-wifi-scan',
+      'net-wifi-ssid',
+      'net-wifi-psk',
+      'net-wifi-clear-psk',
+      'net-wifi-method',
+      'net-wifi-address',
+      'net-wifi-gateway',
+      'net-wifi-dns',
+      'net-dhcp-tries',
+      'net-dhcp-timeout'
+    ].forEach((id) => {
+      const element = document.getElementById(id);
+      element.addEventListener('input', () => {
+        networkDirty = true;
       });
-      await refresh();
-    }
-
-    document.getElementById('refresh').addEventListener('click', () => refresh().catch(console.error));
-    document.getElementById('optimize').addEventListener('click', () => optimize().catch((error) => alert(error.message)));
-    refresh().catch(console.error);
-    window.setInterval(() => refresh().catch(console.error), 5000);
+      element.addEventListener('change', () => {
+        networkDirty = true;
+      });
+    });
+    document.getElementById('net-mode').addEventListener('change', syncModeChecks);
+    document.getElementById('net-wifi-clear-psk').addEventListener('change', syncPasswordControl);
+    document.getElementById('net-wifi-psk').addEventListener('input', () => {
+      if (fieldValue('net-wifi-psk')) {
+        setChecked('net-wifi-clear-psk', false);
+        syncPasswordControl();
+      }
+    });
+    renderActionResult({ writes: [] });
+    renderNetworkResult();
+    appendConsole('info', 'web console ready');
+    refreshWithNotice();
+    window.setInterval(refreshWithNotice, 5000);
   </script>
 </body>
 </html>

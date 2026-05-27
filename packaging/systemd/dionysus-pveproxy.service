@@ -1,13 +1,13 @@
 [Unit]
 Description=Dionysus PVE web proxy
 Documentation=https://github.com/fixgramwork/dionysus
-After=network-online.target dionysus-pvedaemon.service
-Wants=network-online.target dionysus-pvedaemon.service
+After=network-online.target dionysus-network.service dionysus-metricsd.service dionysus-pvedaemon.service
+Wants=network-online.target dionysus-network.service dionysus-metricsd.service dionysus-pvedaemon.service
 
 [Service]
 Type=simple
 EnvironmentFile=-/etc/dionysus/pve.env
-ExecStart=/usr/sbin/dionysus-pveproxy --listen ${DIONYSUS_PVE_PROXY_LISTEN} --proc-root ${DIONYSUS_PROC_ROOT} --sys-root ${DIONYSUS_SYS_ROOT} --profiles-dir ${DIONYSUS_PROFILES_DIR} --ollama-api ${DIONYSUS_OLLAMA_API} --www-root ${DIONYSUS_PVE_WWW}
+ExecStart=/usr/sbin/dionysusd proxy --listen ${DIONYSUS_PVE_PROXY_LISTEN} --proc-root ${DIONYSUS_PROC_ROOT} --sys-root ${DIONYSUS_SYS_ROOT} --etc-root ${DIONYSUS_ETC_ROOT} --ollama-api ${DIONYSUS_OLLAMA_API} --metrics-db ${DIONYSUS_METRICS_DB} --token-file ${DIONYSUS_PVE_TOKEN_FILE} --network-config ${DIONYSUS_NETWORK_CONFIG} --www-root ${DIONYSUS_PVE_WWW}
 Restart=on-failure
 RestartSec=2s
 

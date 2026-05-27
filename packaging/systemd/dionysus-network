@@ -1,0 +1,340 @@
+#!/bin/sh
+
+set -eu
+
+MODE="${1:-start}"
+CONFIG_FILE="${DIONYSUS_NETWORK_CONFIG:-/etc/dionysus/network.env}"
+
+if [ -r "$CONFIG_FILE" ]; then
+    # shellcheck disable=SC1090
+    . "$CONFIG_FILE"
+fi
+
+NETWORK_ENABLED="${DIONYSUS_NETWORK_ENABLED:-1}"
+NETWORK_MODE="${DIONYSUS_NETWORK_MODE:-}"
+LAN_ENABLED="${DIONYSUS_LAN_ENABLED:-0}"
+LAN_IFACE="${DIONYSUS_LAN_IFACE:-eth0}"
+LAN_IPV4_METHOD="${DIONYSUS_LAN_IPV4_METHOD:-dhcp}"
+LAN_IPV4_ADDRESS="${DIONYSUS_LAN_IPV4_ADDRESS:-}"
+LAN_IPV4_GATEWAY="${DIONYSUS_LAN_IPV4_GATEWAY:-}"
+LAN_IPV4_DNS="${DIONYSUS_LAN_DNS:-}"
+WIFI_ENABLED="${DIONYSUS_WIFI_ENABLED:-0}"
+WIFI_IFACE="${DIONYSUS_WIFI_IFACE:-wlan0}"
+WIFI_COUNTRY="${DIONYSUS_WIFI_COUNTRY:-KR}"
+WIFI_SSID="${DIONYSUS_WIFI_SSID:-}"
+WIFI_PSK="${DIONYSUS_WIFI_PSK:-}"
+WIFI_PSK_HASH="${DIONYSUS_WIFI_PSK_HASH:-}"
+WIFI_SCAN_SSID="${DIONYSUS_WIFI_SCAN_SSID:-0}"
+IPV4_METHOD="${DIONYSUS_WIFI_IPV4_METHOD:-dhcp}"
+IPV4_ADDRESS="${DIONYSUS_WIFI_IPV4_ADDRESS:-}"
+IPV4_GATEWAY="${DIONYSUS_WIFI_IPV4_GATEWAY:-}"
+IPV4_DNS="${DIONYSUS_WIFI_DNS:-}"
+DHCP_CLIENT="${DIONYSUS_DHCP_CLIENT:-auto}"
+DHCP_TRIES="${DIONYSUS_DHCP_TRIES:-6}"
+DHCP_TIMEOUT="${DIONYSUS_DHCP_TIMEOUT:-5}"
+RUN_DIR="${DIONYSUS_NETWORK_RUN_DIR:-/run/dionysus/network}"
+RESOLV_CONF="${DIONYSUS_RESOLV_CONF:-/etc/resolv.conf}"
+UDHCPC_SCRIPT="${DIONYSUS_UDHCPC_SCRIPT:-/usr/share/udhcpc/default.script}"
+DRY_RUN="${DIONYSUS_NETWORK_DRY_RUN:-0}"
+
+WPA_CONF="$RUN_DIR/wpa_supplicant-$WIFI_IFACE.conf"
+WPA_PID="$RUN_DIR/wpa_supplicant-$WIFI_IFACE.pid"
+
+if [ -z "$NETWORK_MODE" ]; then
+    if [ "$WIFI_ENABLED" = "1" ]; then
+        NETWORK_MODE="wifi"
+    elif [ "$LAN_ENABLED" = "1" ]; then
+        NETWORK_MODE="lan"
+    else
+        NETWORK_MODE="none"
+    fi
+fi
+
+log() {
+    printf '[dionysus-network] %s\n' "$*"
+}
+
+die() {
+    log "$*"
+    exit 1
+}
+
+command_exists() {
+    command -v "$1" >/dev/null 2>&1
+}
+
+run_cmd() {
+    if [ "$DRY_RUN" = "1" ]; then
+        log "dry-run: $*"
+        return 0
+    fi
+
+    "$@"
+}
+
+require_cmd() {
+    if [ "$DRY_RUN" = "1" ]; then
+        return 0
+    fi
+
+    command_exists "$1" || die "missing required command: $1"
+}
+
+escape_wpa_value() {
+    printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
+}
+
+ensure_run_dir() {
+    mkdir -p "$RUN_DIR"
+    chmod 700 "$RUN_DIR" 2>/dev/null || true
+}
+
+write_wpa_config() {
+    [ -n "$WIFI_SSID" ] || die "DIONYSUS_WIFI_SSID is required when DIONYSUS_WIFI_ENABLED=1"
+
+    ensure_run_dir
+
+    {
+        printf 'ctrl_interface=/run/wpa_supplicant\n'
+        printf 'update_config=0\n'
+        printf 'country=%s\n' "$WIFI_COUNTRY"
+        printf '\n'
+        printf 'network={\n'
+        printf '    ssid="%s"\n' "$(escape_wpa_value "$WIFI_SSID")"
+        printf '    scan_ssid=%s\n' "$WIFI_SCAN_SSID"
+
+        if [ -n "$WIFI_PSK_HASH" ]; then
+            printf '    psk=%s\n' "$WIFI_PSK_HASH"
+        elif [ -n "$WIFI_PSK" ]; then
+            printf '    psk="%s"\n' "$(escape_wpa_value "$WIFI_PSK")"
+        else
+            printf '    key_mgmt=NONE\n'
+        fi
+
+        printf '}\n'
+    } > "$WPA_CONF"
+
+    chmod 600 "$WPA_CONF"
+    log "rendered persistent Wi-Fi config for $WIFI_IFACE"
+}
+
+start_wpa_supplicant() {
+    require_cmd wpa_supplicant
+
+    if [ -f "$WPA_PID" ]; then
+        old_pid="$(cat "$WPA_PID" 2>/dev/null || true)"
+        if [ -n "$old_pid" ] && kill -0 "$old_pid" 2>/dev/null; then
+            log "stopping previous wpa_supplicant pid $old_pid"
+            kill "$old_pid" 2>/dev/null || true
+            sleep 1
+        fi
+        rm -f "$WPA_PID"
+    fi
+
+    run_cmd wpa_supplicant -B -i "$WIFI_IFACE" -c "$WPA_CONF" -P "$WPA_PID"
+}
+
+write_dns() {
+    dns="$1"
+    [ -n "$dns" ] || return 0
+
+    if [ "$DRY_RUN" = "1" ]; then
+        log "dry-run: write DNS to $RESOLV_CONF"
+        return 0
+    fi
+
+    : > "$RESOLV_CONF"
+    for nameserver in $dns; do
+        printf 'nameserver %s\n' "$nameserver" >> "$RESOLV_CONF"
+    done
+}
+
+apply_static_ipv4() {
+    iface="$1"
+    address="$2"
+    gateway="$3"
+    dns="$4"
+
+    [ -n "$address" ] || die "static IPv4 address is required for $iface"
+    require_cmd ip
+
+    run_cmd ip addr flush dev "$iface"
+    run_cmd ip addr add "$address" dev "$iface"
+
+    if [ -n "$gateway" ]; then
+        run_cmd ip route replace default via "$gateway" dev "$iface"
+    fi
+
+    write_dns "$dns"
+}
+
+start_dhcp() {
+    iface="$1"
+
+    if [ "$DRY_RUN" = "1" ] && [ "$DHCP_CLIENT" = "auto" ]; then
+        log "dry-run: DHCP auto selection for $iface"
+        return 0
+    fi
+
+    case "$DHCP_CLIENT" in
+        auto)
+            if command_exists udhcpc; then
+                run_cmd udhcpc -q -t "$DHCP_TRIES" -T "$DHCP_TIMEOUT" -i "$iface" -s "$UDHCPC_SCRIPT"
+                return 0
+            fi
+
+            if command_exists dhclient; then
+                run_cmd dhclient -v "$iface"
+                return 0
+            fi
+            ;;
+        udhcpc)
+            require_cmd udhcpc
+            run_cmd udhcpc -q -t "$DHCP_TRIES" -T "$DHCP_TIMEOUT" -i "$iface" -s "$UDHCPC_SCRIPT"
+            return 0
+            ;;
+        dhclient)
+            require_cmd dhclient
+            run_cmd dhclient -v "$iface"
+            return 0
+            ;;
+        none)
+            log "DHCP disabled"
+            return 0
+            ;;
+        *)
+            die "unsupported DIONYSUS_DHCP_CLIENT: $DHCP_CLIENT"
+            ;;
+    esac
+
+    die "no DHCP client found; install udhcpc or dhclient, or configure static IPv4"
+}
+
+configure_ipv4() {
+    iface="$1"
+    method="$2"
+    address="$3"
+    gateway="$4"
+    dns="$5"
+
+    require_cmd ip
+    run_cmd ip link set "$iface" up
+
+    case "$method" in
+        dhcp)
+            start_dhcp "$iface"
+            ;;
+        static)
+            apply_static_ipv4 "$iface" "$address" "$gateway" "$dns"
+            ;;
+        none)
+            log "IPv4 configuration disabled for $iface"
+            ;;
+        *)
+            die "unsupported IPv4 method for $iface: $method"
+            ;;
+    esac
+}
+
+start_lan() {
+    if [ "$LAN_ENABLED" != "1" ]; then
+        log "LAN setup disabled"
+        return 0
+    fi
+
+    configure_ipv4 "$LAN_IFACE" "$LAN_IPV4_METHOD" "$LAN_IPV4_ADDRESS" "$LAN_IPV4_GATEWAY" "$LAN_IPV4_DNS"
+    log "LAN setup completed for $LAN_IFACE"
+}
+
+start_wifi() {
+    if [ "$WIFI_ENABLED" != "1" ]; then
+        log "persistent Wi-Fi disabled"
+        return 0
+    fi
+
+    write_wpa_config
+    require_cmd ip
+    run_cmd ip link set "$WIFI_IFACE" up
+    start_wpa_supplicant
+    configure_ipv4 "$WIFI_IFACE" "$IPV4_METHOD" "$IPV4_ADDRESS" "$IPV4_GATEWAY" "$IPV4_DNS"
+    log "persistent Wi-Fi setup completed for $WIFI_IFACE"
+}
+
+start_network() {
+    if [ "$NETWORK_ENABLED" != "1" ]; then
+        log "persistent network setup disabled"
+        return 0
+    fi
+
+    case "$NETWORK_MODE" in
+        lan)
+            start_lan
+            ;;
+        wifi)
+            start_wifi
+            ;;
+        none)
+            log "persistent network mode is none"
+            ;;
+        *)
+            die "unsupported DIONYSUS_NETWORK_MODE: $NETWORK_MODE"
+            ;;
+    esac
+}
+
+stop_wifi() {
+    if [ -f "$WPA_PID" ]; then
+        pid="$(cat "$WPA_PID" 2>/dev/null || true)"
+        if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+            run_cmd kill "$pid"
+        fi
+        rm -f "$WPA_PID"
+    fi
+
+    if [ "$DHCP_CLIENT" = "dhclient" ] && command_exists dhclient; then
+        run_cmd dhclient -r "$WIFI_IFACE" || true
+    fi
+}
+
+print_status() {
+    printf 'config=%s\n' "$CONFIG_FILE"
+    printf 'network_enabled=%s\n' "$NETWORK_ENABLED"
+    printf 'network_mode=%s\n' "$NETWORK_MODE"
+    printf 'lan_enabled=%s\n' "$LAN_ENABLED"
+    printf 'lan_iface=%s\n' "$LAN_IFACE"
+    printf 'lan_ipv4_method=%s\n' "$LAN_IPV4_METHOD"
+    printf 'wifi_enabled=%s\n' "$WIFI_ENABLED"
+    printf 'wifi_iface=%s\n' "$WIFI_IFACE"
+    printf 'wifi_ssid=%s\n' "$WIFI_SSID"
+    printf 'ipv4_method=%s\n' "$IPV4_METHOD"
+
+    if command_exists ip; then
+        ip addr show dev "$LAN_IFACE" 2>/dev/null || true
+        ip route show dev "$LAN_IFACE" 2>/dev/null || true
+        ip addr show dev "$WIFI_IFACE" 2>/dev/null || true
+        ip route show dev "$WIFI_IFACE" 2>/dev/null || true
+    fi
+}
+
+case "$MODE" in
+    start)
+        start_network
+        ;;
+    stop)
+        stop_wifi
+        ;;
+    restart)
+        stop_wifi
+        start_network
+        ;;
+    status)
+        print_status
+        ;;
+    render-config)
+        write_wpa_config
+        printf '%s\n' "$WPA_CONF"
+        ;;
+    *)
+        die "unsupported mode: $MODE"
+        ;;
+esac

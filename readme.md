@@ -52,13 +52,13 @@ This README is intentionally structured like a production open-source repository
 The first system design pass fixes the control-plane boundary as:
 
 ```text
-Bootloader/Firmware -> Linux kernel -> kernel interfaces -> Dionysus agent -> Perl API2 daemon -> pveproxy -> ExtJS-style UI
+Bootloader/Firmware -> Linux kernel -> kernel interfaces -> Dionysus agent -> dionysusd API daemon -> pveproxy-compatible UI
 ```
 
 - Linux becomes the long-term kernel and hardware base.
 - Dionysus agent translates Linux interfaces into a product-specific resource model.
-- Perl exposes Proxmox-style `/api2/json` control-plane APIs and audit-friendly workflows.
-- `pveproxy` serves the management web on port `8006` with an ExtJS-style operator interface.
+- Rust `dionysusd` exposes Proxmox-style `/api2/json` control-plane APIs and audit-friendly workflows.
+- `dionysusd proxy` serves the management web on port `8006` with an ExtJS-style operator interface.
 - Future package, Local LLM, and system status features extend the same control-plane model instead of introducing side channels.
 
 See [`docs/architecture/linux-base-control-plane.md`](docs/architecture/linux-base-control-plane.md) for the current architecture draft.
@@ -76,7 +76,7 @@ The repository boot direction is now Linux-only:
 
 | Track | What will be added |
 | --- | --- |
-| Application | Dionysus agent, Perl API2 daemon, pveproxy-style UI, and memory inspection primitives |
+| Application | Dionysus agent, Rust API2 daemon, pveproxy-style UI, and memory inspection primitives |
 | Developer Experience | Linux initramfs, PVE control-plane install/run/test automation |
 | Quality | Formatting, linting, and CI checks |
 | Documentation | Usage examples, architecture notes, and control-plane contracts |
@@ -118,7 +118,7 @@ make
 The default Make target is `run`, so `make` now follows the Linux-based OS path and resolves to `make linux-run`.
 On non-Linux hosts, `make build`, `make iso`, and `make run` automatically fall back to a Docker-based Linux builder when Docker Desktop is running.
 The early initramfs path now performs bootstrap capture, best-effort networking, and rescue shell entry only.
-The management web is installed into the normal Linux root filesystem as systemd services.
+The management web is installed into the normal Ubuntu/Debian Linux root filesystem as systemd services.
 
 For a normal Linux root filesystem with systemd, stage Dionysus as an OS-managed service:
 
@@ -126,8 +126,32 @@ For a normal Linux root filesystem with systemd, stage Dionysus as an OS-managed
 make pve-control-plane-install
 ```
 
-That target installs the Perl API2 daemon, `pveproxy`-style web service, workload profiles, environment defaults, and systemd units into `build/pve-control-plane-rootfs`. The service starts on `multi-user.target` and serves the management web from inside the OS on port `8006`.
-It also stages `dionysus-llm-swap.service`, which creates and enables a dedicated swap file before `ollama.service`, `dionysus-pvedaemon.service`, and `dionysus-pveproxy.service`.
+That target installs the Rust `dionysusd` API/proxy/metrics daemon, workload profiles, persistent network defaults, and systemd units into `build/pve-control-plane-rootfs`.
+For a real Ubuntu/Debian Ollama server, install directly on the host with:
+
+```bash
+sudo sh scripts/install-pve-control-plane.sh --host
+```
+
+The host install creates `/etc/dionysus/pve.token`, enables `dionysus-llm-swap.service`, `dionysus-metricsd.service`, `dionysus-pvedaemon.service`, and `dionysus-pveproxy.service`, then serves the management web from inside the OS on port `8006`.
+The installer checks required packages and prints `apt-get` commands when dependencies are missing.
+To let the host install download and install missing packages through `apt-get`, run:
+
+```bash
+sudo sh scripts/install-pve-control-plane.sh --host --install-deps
+```
+
+The `--install-deps` path runs `apt-get update` and `apt-get install -y --no-install-recommends ...` only during direct host install.
+The management UI connects directly to the host OS through `dionysusd`: `/proc`, `/sys`, and `/etc/os-release` populate the node OS panel, while the same status response reports the active web listener, static web root, metrics database, network config path, and token-auth state.
+`dionysus-metricsd` records Ollama RAM samples every 30 seconds in `/var/lib/dionysus/metrics/ollama.sqlite3` and keeps 7 days by default.
+`dionysus-llm-swap.service` creates and enables a dedicated swap file before `ollama.service`, `dionysus-pvedaemon.service`, and `dionysus-pveproxy.service`.
+The web UI includes a KV-cache optimization panel that compares current kernel values against the built-in Ollama KV-cache profile, previews changes, applies them manually, and records operator-visible output in the web console.
+`dionysusd` fails closed outside a Linux/systemd target OS by default. Local UI-only development must be explicit with `--dev-allow-host` or `DIONYSUS_DEV_ALLOW_HOST=1`.
+
+Persistent LAN and Wi-Fi settings are managed by the web UI on port `8006` or by editing `/etc/dionysus/network.env`.
+The UI exposes an explicit preview, save, and save-and-apply flow for `dionysus-network.service`.
+LAN and Wi-Fi are opt-in so an existing server network stack is not changed until an operator enables a mode.
+When Wi-Fi is enabled, `dionysus-network.service` renders a private `wpa_supplicant` config, brings the selected interface up, and applies DHCP or static IPv4 from the same file before the management web starts.
 
 ## Linux Base Workflow
 
@@ -136,7 +160,7 @@ If the product direction is "Ubuntu-style development on top of Linux", treat th
 Current repository convention:
 
 - upstream Linux checkout: `upstream/linux`
-- tracked Dionysus kernel deltas: config fragments, optional patches, initramfs, agent, PVE API daemon, and UI
+- tracked Dionysus deltas: config fragments, optional patches, initramfs, agent, Rust PVE API daemon, and UI
 - current Linux fragment: [`config/linux/x86_64-dionysus.fragment`](config/linux/x86_64-dionysus.fragment)
 
 Bootstrap commands:
@@ -201,15 +225,18 @@ make raspi-boot RASPI_CONFIG_TARGET=bcm2712_defconfig RASPI_KERNEL_NAME=kernel_2
 
 The primary Linux-native application slice now follows a Proxmox-style stack:
 
-- `pve/bin/dionysus-pvedaemon`: Perl API daemon using Proxmox-style `/api2/json` paths
-- `pve/bin/dionysus-pveproxy`: web proxy serving the operator UI on port `8006`
-- `pve/lib/Dionysus/PVE/API.pm`: node status, service status, Ollama, swap, and optimization API
+- `src/bin/dionysusd.rs`: Rust daemon for API, web proxy, metrics sampling, token auth, and Ollama RAM control
+- `pve/bin/dionysus-pvedaemon`: compatibility wrapper for `dionysusd api`
+- `pve/bin/dionysus-pveproxy`: compatibility wrapper for `dionysusd proxy`
+- `pve/bin/dionysus-metricsd`: compatibility wrapper for `dionysusd metricsd`
 - `pve/www/index.html`: ExtJS-style management interface without a frontend build step
 - `profiles/*.yaml`: sample Web, LLM, and DB policy profiles
+- `packaging/systemd/dionysus-network.service`: systemd unit for persistent LAN/Wi-Fi setup from `/etc/dionysus/network.env`
+- `packaging/systemd/dionysus-metricsd.service`: systemd unit for 30-second Ollama RAM sampling
 - `packaging/systemd/dionysus-pvedaemon.service`: systemd unit for the API daemon
 - `packaging/systemd/dionysus-pveproxy.service`: systemd unit for the management web proxy
 - `packaging/systemd/dionysus-llm-swap.service`: systemd unit for provisioning Local LLM swap before Ollama starts
-- `scripts/install-pve-control-plane.sh`: rootfs staging helper for installing the Perl stack, profiles, and service files
+- `scripts/install-pve-control-plane.sh`: rootfs staging helper for installing the Rust daemon, profiles, and service files
 
 Verification commands for the application slice:
 
@@ -217,6 +244,7 @@ Verification commands for the application slice:
 # Proxmox-style control plane
 make pve-check
 make pve-control-plane-install
+sudo sh scripts/install-pve-control-plane.sh --host
 ```
 
 ## Roadmap
