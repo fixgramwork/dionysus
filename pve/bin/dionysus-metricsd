@@ -1,0 +1,9 @@
+#!/bin/sh
+
+set -eu
+
+if command -v dionysusd >/dev/null 2>&1; then
+    exec dionysusd metricsd "$@"
+fi
+
+exec "$(dirname "$0")/dionysusd" metricsd "$@"

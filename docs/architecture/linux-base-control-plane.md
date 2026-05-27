@@ -29,7 +29,7 @@ Dionysus는 그 위에 제어 평면과 운영 경험을 쌓습니다.
 ## 계층 구조
 
 ```text
-Bootloader/Firmware -> Linux kernel -> kernel interfaces -> Dionysus agent -> Perl API2 daemon -> pveproxy -> ExtJS-style UI
+Bootloader/Firmware -> Linux kernel -> kernel interfaces -> Dionysus agent -> dionysusd API daemon -> pveproxy-compatible UI
 ```
 
 여기서 `kernel interfaces` 는 다음과 같은 Linux 표준 경로를 의미합니다.
@@ -50,8 +50,8 @@ Bootloader/Firmware -> Linux kernel -> kernel interfaces -> Dionysus agent -> Pe
 | Linux kernel | 하드웨어 추상화, 프로세스/메모리/파일시스템/네트워크 핵심 기능 제공 | 검증된 운영체제 기반 | Dionysus UI, 운영자 워크플로 구현 |
 | Kernel interfaces | 커널 상태와 제어 기능을 표준 계약으로 노출 | 안정된 조회/제어 엔트리포인트 | 제품별 UX 정책 강제 |
 | Dionysus agent | Linux 인터페이스 수집, 정책 적용, 안전한 자원 모델 구성 | Dionysus resource model, 감사 가능한 요청 처리 | Linux 핵심 기능 재구현 |
-| Perl API2 daemon | 인증, 인가, audit log, session, API 집계 | Proxmox-style `/api2/json` 운영자 API | 커널 우회 직접 제어 |
-| pveproxy + ExtJS-style UI | 상태 시각화, diff, 승인 플로우, 제한된 조작 UX | 운영자 화면과 안전한 상호작용 | 정책 원천 결정 |
+| Rust `dionysusd` API daemon | token auth, API 집계, RAM/Ollama metric 기록, 명시적 최적화 적용 | Proxmox-style `/api2/json` 운영자 API | 커널 우회 직접 제어 |
+| pveproxy-compatible UI | 상태 시각화, diff, 승인 플로우, 제한된 조작 UX | 운영자 화면과 안전한 상호작용 | 정책 원천 결정 |
 
 ## OS 내부 관리 웹 실행 모델
 
@@ -61,6 +61,7 @@ Proxmox와 같은 관리 경험을 목표로 할 때 Dionysus 관리 웹은 개�
 현재 제품 기준은 Proxmox와 비슷한 `pvedaemon`/`pveproxy` 구조입니다.
 
 - 일반 Linux rootfs 경로: `dionysus-pvedaemon.service` 가 localhost API daemon을 시작하고, `dionysus-pveproxy.service` 가 `0.0.0.0:8006` 에서 웹 UI와 `/api2/json` API를 제공합니다.
+- 영구 네트워크 경로: `dionysus-network.service` 가 `/etc/dionysus/network.env` 를 읽어 LAN 또는 Wi-Fi 모드를 적용합니다. 웹 UI는 설정을 preview/save/apply 흐름으로 관리하고, Wi-Fi 비밀번호는 API 응답에 되돌려주지 않습니다.
 - Local LLM 경로: `dionysus-llm-swap.service` 가 `ollama.service` 보다 먼저 dedicated swap backing store를 준비합니다.
 
 초기 부팅 경로는 관리 웹을 띄우지 않습니다.
@@ -68,12 +69,14 @@ initramfs는 `/proc`, `/sys`, 네트워크, 부트 상태를 확인하고 rescue
 관리 웹/API는 rootfs의 systemd service에서만 실행합니다.
 
 - initramfs 경로: `/init` 이 `dionysus-agent bootstrap`, `dionysus-network start`, `dionysus-services banner` 를 실행합니다.
-- rootfs 경로: `dionysus-pvedaemon.service`, `dionysus-pveproxy.service`, `dionysus-llm-swap.service` 를 systemd가 관리합니다.
+- rootfs 경로: `dionysus-network.service`, `dionysus-pvedaemon.service`, `dionysus-pveproxy.service`, `dionysus-llm-swap.service` 를 systemd가 관리합니다.
+- OS 상태 연결 경로: `/api2/json/nodes/localhost/status` 는 `/proc`, `/sys`, `/etc/os-release` 에서 읽은 운영체제 정보와 현재 `dionysusd proxy` 의 웹 리스너, 정적 루트, metrics DB, network config, token-auth 상태를 함께 제공합니다.
+- 네트워크 변경 경로: `/api2/json/nodes/localhost/network/config` 는 LAN/Wi-Fi 설정을 저장하고, 명시적 apply 요청에서만 `dionysus-network.service` 재시작을 요청합니다.
 
 이 구조에서 호스트 OS가 살아 있으면 관리 웹도 살아 있고, 호스트 OS 자체가 종료되면 관리 웹도 함께 종료됩니다.
 VM이나 컨테이너 같은 게스트의 상태는 호스트 OS 내부의 Dionysus 서비스가 관찰하고 제어합니다.
 
-systemd rootfs의 기본 관리 화면은 Perl 기반 `dionysus-pveproxy` 가 제공합니다.
+systemd rootfs의 기본 관리 화면은 Rust `dionysusd proxy` 가 제공합니다.
 
 ## Local LLM 최적화 방향
 
@@ -83,8 +86,11 @@ systemd rootfs의 기본 관리 화면은 Perl 기반 `dionysus-pveproxy` 가 �
 초기 최적화 단위는 다음과 같습니다.
 
 - Ollama API(`/api/tags`)와 `/proc` 프로세스 스캔으로 실행 상태, 모델 수, RSS, swap 사용량을 관찰한다.
+- Ollama API(`/api/ps`)로 현재 메모리에 올라간 모델 크기, VRAM 보고값, context length를 함께 관찰한다.
+- `dionysus-metricsd.service` 가 30초마다 SQLite에 RAM/Ollama 상태를 기록하고 기본 7일 보존한다.
 - `dionysus-llm-swap.service` 로 dedicated swap 파일을 먼저 켜고, Ollama가 RAM 부족 시 사용할 backing store를 확보한다.
 - Proxmox-style `/api2/json/nodes/localhost/ollama/optimize` API로 `vm.swappiness`, `vm.page-cluster`, `vm.vfs_cache_pressure`, `vm.watermark_scale_factor`, THP 정책을 조정한다.
+- `/api2/json/nodes/localhost/ollama/kv-cache/profile` 과 UI의 KV-cache Optimization 패널은 현재 커널 값을 목표 프로필과 비교하고, preview/apply 결과를 웹 콘솔에 남긴다.
 - UI/API는 "무조건 빠른 swap"처럼 표현하지 않고, KV-cache overflow와 모델 page cache 보존을 위한 운영 프로필로 설명한다.
 
 KV-cache는 latency-sensitive anonymous memory이므로 swap은 성능 향상 장치가 아니라 RAM 한계를 넘을 때의
@@ -136,7 +142,7 @@ Linux 베이스 전환 이후 첫 구현 범위는 다음으로 제한합니다.
 2. initramfs에서 Dionysus agent를 시작한다.
 3. agent가 `system_memory_map` 과 `kernel_health` 를 수집한다.
 4. agent가 Dionysus 전용 `lab_buffer` 를 읽고 쓸 수 있는 제한된 API를 제공한다.
-5. Perl API2 daemon과 pveproxy UI는 이 자원만 노출한다.
+5. Rust API2 daemon과 pveproxy UI는 이 자원만 노출한다.
 
 이 수직 슬라이스로 증명하려는 것은 다음입니다.
 
@@ -167,7 +173,7 @@ Linux 베이스 전환 이후 첫 구현 범위는 다음으로 제한합니다.
 
 ### 4. 제어 평면 확장
 
-- Perl API2 daemon에서 인증, audit, rate limit 추가
+- Rust `dionysusd` API daemon에서 인증, audit, rate limit 추가
 - pveproxy UI에서 읽기 전용 상태와 제한된 patch UX 구현
 
 ## 금지된 방향

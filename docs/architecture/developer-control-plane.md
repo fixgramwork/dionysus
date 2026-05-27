@@ -11,7 +11,7 @@
 현재 유효한 제어 평면 계층은 다음과 같습니다.
 
 ```text
-Bootloader/Firmware -> Linux kernel -> kernel interfaces -> Dionysus agent -> Perl API2 daemon -> pveproxy -> ExtJS-style UI
+Bootloader/Firmware -> Linux kernel -> kernel interfaces -> Dionysus agent -> dionysusd API daemon -> pveproxy-compatible UI
 ```
 
 이전 자체 커널/별도 웹 개발 서버 경로는 제품 경로에서 제외되었습니다.
