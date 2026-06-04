@@ -93,8 +93,8 @@ add_package() {
 check_dependencies() {
     MISSING_PACKAGES=""
 
-    if [ -z "$DIONYSUSD_BIN" ] && [ ! -x target/release/dionysusd ]; then
-        command -v cargo >/dev/null 2>&1 || add_package cargo
+    if [ -z "$DIONYSUSD_BIN" ] && [ ! -x build/dionysusd ]; then
+        command -v go >/dev/null 2>&1 || add_package golang-go
     fi
     command -v systemctl >/dev/null 2>&1 || add_package systemd
     command -v sqlite3 >/dev/null 2>&1 || add_package sqlite3
@@ -137,12 +137,17 @@ build_dionysusd() {
         return
     fi
 
-    if [ ! -x target/release/dionysusd ]; then
-        $STATUS info "Building Rust control-plane daemon with cargo"
-        cargo build --release --bin dionysusd
+    if [ ! -x build/dionysusd ]; then
+        command -v go >/dev/null 2>&1 || {
+            $STATUS error "Missing required tool: go"
+            exit 1
+        }
+        $STATUS info "Building Go control-plane daemon"
+        mkdir -p build/gocache build/gomodcache
+        GOCACHE="${GOCACHE:-$(pwd)/build/gocache}" GOMODCACHE="${GOMODCACHE:-$(pwd)/build/gomodcache}" go build -o build/dionysusd ./cmd/dionysusd
     fi
 
-    DIONYSUSD_BUILD_BIN="target/release/dionysusd"
+    DIONYSUSD_BUILD_BIN="build/dionysusd"
     require_file "$DIONYSUSD_BUILD_BIN"
 }
 
@@ -196,8 +201,8 @@ enable_host_services() {
     systemctl enable --now dionysus-pveproxy.service
 }
 
-require_file "Cargo.toml"
-require_file "src/bin/dionysusd.rs"
+require_file "go.mod"
+require_file "cmd/dionysusd/main.go"
 require_file "$PVE_DIR/bin/dionysus-metricsd"
 require_file "$PVE_DIR/bin/dionysus-pvedaemon"
 require_file "$PVE_DIR/bin/dionysus-pveproxy"
@@ -245,8 +250,9 @@ chmod 755 "$DESTDIR/usr/sbin/dionysusd" \
     "$DESTDIR/usr/sbin/dionysus-pvedaemon" \
     "$DESTDIR/usr/sbin/dionysus-pveproxy"
 
-cp "$PVE_DIR/www/index.html" "$DESTDIR/usr/share/dionysus-pve-manager/www/index.html"
-chmod 644 "$DESTDIR/usr/share/dionysus-pve-manager/www/index.html"
+cp -R "$PVE_DIR/www/." "$DESTDIR/usr/share/dionysus-pve-manager/www/"
+find "$DESTDIR/usr/share/dionysus-pve-manager/www" -type d -exec chmod 755 {} \;
+find "$DESTDIR/usr/share/dionysus-pve-manager/www" -type f -exec chmod 644 {} \;
 
 cp "$SYSTEMD_DIR/dionysus-pve.env" "$DESTDIR/etc/dionysus/pve.env"
 chmod 644 "$DESTDIR/etc/dionysus/pve.env"

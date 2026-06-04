@@ -12,27 +12,36 @@
 - 바뀐 동작은 반드시 빌드 또는 부팅 경로에서 검증합니다.
 - Linux host 전용 경로(`/proc`, `/sys`, `/sys/fs/cgroup`, Docker socket)는 상수로 박아두지 말고 테스트 가능한 형태로 주입 가능해야 합니다.
 
-## Rust control-plane 규칙
+## Go/Svelte control-plane 규칙
 
 - Proxmox와 비슷한 경로 이름, service 이름, `/api2/json` 응답 모양을 우선합니다.
 - `/proc`, `/sys`, `/etc`, Ollama API 같은 외부 입력은 root 경로나 endpoint를 주입 가능하게 유지합니다.
 - 읽기 API와 변경 API를 분리하고, sysctl/sysfs 변경은 어떤 값을 적용했는지 응답에 남깁니다.
 - 네트워크 설정 API는 preview/save/apply를 분리하고, Wi-Fi PSK 같은 secret 값은 응답 JSON이나 UI 결과 테이블에 되돌려주지 않습니다.
-- `src/bin/dionysusd.rs` 는 systemd에서 `api`, `proxy`, `metricsd` subcommand로 실행되는 단일 제어 평면 바이너리입니다.
+- `cmd/dionysusd` 는 systemd에서 `api`, `proxy`, `metricsd` subcommand로 실행되는 단일 Go 제어 평면 바이너리입니다.
 - 호환용 `pve/bin/dionysus-*` wrapper에는 비즈니스 로직을 두지 않고 `dionysusd` 호출만 남깁니다.
 - daemon entrypoint는 명령행 인자와 systemd 환경 파일을 동시에 지원합니다.
 - `dionysusd` 는 기본적으로 Linux/systemd target OS 밖에서 실행되지 않아야 하며, 로컬 UI 확인은 `--dev-allow-host` 같은 명시적 개발 override로만 허용합니다.
 - SQLite, `/proc`, `/sys` 접근은 테스트에서 임시 root와 임시 DB로 검증 가능해야 합니다.
 - host installer가 `apt-get` 같은 패키지 관리자를 실행할 때는 opt-in 인자 또는 환경 변수가 있어야 하며, staged rootfs 설치에서는 호스트 패키지를 변경하지 않습니다.
 
-## HTML / operator UI 규칙
+## Svelte operator UI 규칙
 
-- 제품 기본 UI는 별도 frontend build 없이 `dionysus-pveproxy` 가 직접 제공할 수 있어야 합니다.
+- 제품 기본 UI는 Svelte로 구현하고, 빌드 결과는 `pve/www` 에 둬서 `dionysusd proxy` 가 OS 내부에서 직접 제공할 수 있어야 합니다.
+- 프런트엔드 개발 서버는 개발 편의용일 뿐이며 제품 경로가 아닙니다. 제품 경로는 systemd가 실행하는 Go `dionysusd proxy` 와 정적 Svelte assets입니다.
 - 바이트, swap, service state처럼 단위가 중요한 값은 화면에서 일관되게 포맷합니다.
 - 운영자 UI는 "경고", "현재 상태", "적용 액션"을 동시에 보여줘야 하며, 성공/실패 메시지를 숨기지 않습니다.
 - 위험한 변경 버튼은 대응하는 `/api2/json` 작업과 결과를 화면 상태에 반영해야 합니다.
 - 네트워크 변경처럼 접속성을 끊을 수 있는 작업은 preview와 explicit apply 버튼을 분리하고, 저장된 secret 여부만 표시합니다.
 - KV-cache, 네트워크 같은 운영 액션은 사람이 읽을 수 있는 결과를 웹 콘솔에 남기고, preview와 실제 apply 결과를 구분해 표시합니다.
+
+## Go 코드 규칙
+
+- package 바깥으로 공개할 필요가 없는 식별자는 소문자로 유지합니다.
+- Linux host 전용 접근은 `Config` 를 통해 주입 가능한 root path와 endpoint를 사용합니다.
+- HTTP handler는 Proxmox-style wrapper `{ "data": ... }` 와 token auth 실패 응답 모양을 유지합니다.
+- 변경 API는 dry-run 결과와 실제 적용 결과를 모두 테스트 가능해야 합니다.
+- 표준 라이브러리로 충분하면 외부 Go module을 추가하지 않습니다.
 
 ## Rust 코드 규칙
 

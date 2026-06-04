@@ -13,6 +13,8 @@ INITRAMFS_DIR ?= initramfs/overlay
 PVE_CONTROL_PLANE_ROOTFS ?= $(BUILD_DIR)/pve-control-plane-rootfs
 PVE_CHECK_ROOTFS ?= $(BUILD_DIR)/pve-check-rootfs
 DIONYSUSD_BIN ?= $(BUILD_DIR)/dionysusd
+DIONYSUS_GO_CACHE ?= $(BUILD_DIR)/gocache
+DIONYSUS_GO_MOD_CACHE ?= $(BUILD_DIR)/gomodcache
 DIONYSUS_DEV_LISTEN ?= 127.0.0.1:18008
 DIONYSUS_DEV_DIR ?= $(BUILD_DIR)/dev
 DIONYSUS_DEV_METRICS_DIR ?= $(DIONYSUS_DEV_DIR)/metrics
@@ -20,6 +22,10 @@ DIONYSUS_DEV_METRICS_DB ?= $(DIONYSUS_DEV_METRICS_DIR)/ollama.sqlite3
 DIONYSUS_DEV_TOKEN_FILE ?= $(DIONYSUS_DEV_DIR)/pve.token
 DIONYSUS_DEV_NETWORK_CONFIG ?= $(DIONYSUS_DEV_DIR)/network.env
 DIONYSUS_DEV_WWW ?= pve/www
+PVE_UI_DIR ?= frontend/svelte
+PVE_UI_INDEX := pve/www/index.html
+GO_SOURCES := $(wildcard cmd/dionysusd/*.go)
+PVE_UI_SOURCES := $(PVE_UI_DIR)/package.json $(PVE_UI_DIR)/index.html $(PVE_UI_DIR)/vite.config.js $(wildcard $(PVE_UI_DIR)/src/*)
 
 RASPI_LINUX_DIR ?= upstream/raspberrypi-linux
 RASPI_LINUX_REMOTE ?= https://github.com/raspberrypi/linux.git
@@ -34,15 +40,15 @@ RASPI_CONFIG_TEMPLATE := config/raspberry-pi/config.txt
 RASPI_CMDLINE_TEMPLATE := config/raspberry-pi/cmdline.txt
 RASPI_KERNEL_NAME ?= kernel8.img
 
-.PHONY: all build run clean help dionysusd dev-data pve-check pve-control-plane-install pve-control-plane-host-install raspi-fetch raspi-status raspi-initramfs raspi-boot check-raspi-fetch-tools check-initramfs-tools check-pve-tools
+.PHONY: all build run clean help dionysusd pve-ui dev-data pve-check pve-control-plane-install pve-control-plane-host-install raspi-fetch raspi-status raspi-initramfs raspi-boot check-raspi-fetch-tools check-initramfs-tools check-pve-tools
 
 all: build
 
 help:
-	@$(STATUS) info "make           Run the Rust control-plane web UI in local development mode."
-	@$(STATUS) info "make build     Build the Rust control-plane daemon."
-	@$(STATUS) info "make run       Serve the Rust control-plane web UI on $(DIONYSUS_DEV_LISTEN)."
-	@$(STATUS) info "make pve-control-plane-install Stage the Rust/API2 web control plane."
+	@$(STATUS) info "make           Run the Go/Svelte control-plane web UI in local development mode."
+	@$(STATUS) info "make build     Build the Go daemon and Svelte operator UI."
+	@$(STATUS) info "make run       Serve the Go/Svelte control-plane web UI on $(DIONYSUS_DEV_LISTEN)."
+	@$(STATUS) info "make pve-control-plane-install Stage the Go/Svelte API2 web control plane."
 	@$(STATUS) info "make pve-control-plane-host-install Install the Ollama RAM control plane on this systemd host."
 	@$(STATUS) info "make raspi-fetch  Clone or update Raspberry Pi Linux in $(RASPI_LINUX_DIR)."
 	@$(STATUS) info "make raspi-initramfs Build a Raspberry Pi ARM64 initramfs archive."
@@ -70,36 +76,42 @@ check-initramfs-tools:
 	@$(STATUS) success "Initramfs packaging tools are available"
 
 check-pve-tools:
-	@$(STATUS) info "Checking Rust control-plane tools"
-	@for tool in cargo sqlite3; do \
+	@$(STATUS) info "Checking Go/Svelte control-plane tools"
+	@for tool in go npm sqlite3; do \
 		if ! command -v "$$tool" >/dev/null 2>&1; then \
 			$(STATUS) error "Missing required tool: $$tool"; \
-			$(STATUS) error "Install cargo and sqlite3 before staging the control plane."; \
+			$(STATUS) error "Install go, npm, and sqlite3 before staging the control plane."; \
 			exit 1; \
 		fi; \
 	done
-	@$(STATUS) success "Rust control-plane tools are available"
+	@$(STATUS) success "Go/Svelte control-plane tools are available"
 
-build: dionysusd
+build: dionysusd pve-ui
 
 dev-data:
 	@mkdir -p "$(DIONYSUS_DEV_METRICS_DIR)"
 
-run: dev-data dionysusd
+run: dev-data dionysusd pve-ui
 	@$(STATUS) info "Starting Dionysus control-plane UI at http://$(DIONYSUS_DEV_LISTEN)"
 	@$(DIONYSUSD_BIN) proxy --dev-allow-host --listen "$(DIONYSUS_DEV_LISTEN)" --www-root "$(DIONYSUS_DEV_WWW)" --metrics-db "$(DIONYSUS_DEV_METRICS_DB)" --token-file "$(DIONYSUS_DEV_TOKEN_FILE)" --network-config "$(DIONYSUS_DEV_NETWORK_CONFIG)"
 
 dionysusd: $(DIONYSUSD_BIN)
 
-$(DIONYSUSD_BIN): Cargo.toml Cargo.lock src/bin/dionysusd.rs
-	@$(STATUS) info "Building Rust control-plane daemon"
-	@cargo build --release --bin dionysusd
-	@mkdir -p "$(dir $(DIONYSUSD_BIN))"
-	@cp target/release/dionysusd "$(DIONYSUSD_BIN)"
+$(DIONYSUSD_BIN): go.mod $(GO_SOURCES)
+	@$(STATUS) info "Building Go control-plane daemon"
+	@mkdir -p "$(dir $(DIONYSUSD_BIN))" "$(DIONYSUS_GO_CACHE)" "$(DIONYSUS_GO_MOD_CACHE)"
+	@GOCACHE="$(abspath $(DIONYSUS_GO_CACHE))" GOMODCACHE="$(abspath $(DIONYSUS_GO_MOD_CACHE))" go build -o "$(DIONYSUSD_BIN)" ./cmd/dionysusd
 
-pve-check: check-pve-tools $(DIONYSUSD_BIN)
-	@$(STATUS) info "Running Rust control-plane unit tests"
-	@cargo test --bin dionysusd
+pve-ui: $(PVE_UI_INDEX)
+
+$(PVE_UI_INDEX): $(PVE_UI_SOURCES)
+	@$(STATUS) info "Building Svelte operator UI"
+	@cd "$(PVE_UI_DIR)" && npm install
+	@cd "$(PVE_UI_DIR)" && npm run build
+
+pve-check: check-pve-tools $(DIONYSUSD_BIN) pve-ui
+	@$(STATUS) info "Running Go control-plane unit tests"
+	@GOCACHE="$(abspath $(DIONYSUS_GO_CACHE))" GOMODCACHE="$(abspath $(DIONYSUS_GO_MOD_CACHE))" go test ./cmd/dionysusd
 	@$(STATUS) info "Checking control-plane shell wrappers"
 	@sh -n pve/bin/dionysus-metricsd
 	@sh -n pve/bin/dionysus-pvedaemon
@@ -109,7 +121,7 @@ pve-check: check-pve-tools $(DIONYSUSD_BIN)
 	@$(STATUS) info "Verifying staged PVE control-plane install in $(PVE_CHECK_ROOTFS)"
 	@DESTDIR="$(PVE_CHECK_ROOTFS)" DIONYSUSD_BIN="$(DIONYSUSD_BIN)" DIONYSUS_PROFILES_DIR="profiles" $(PVE_CONTROL_PLANE_INSTALL)
 
-pve-control-plane-install: pve-check scripts/install-pve-control-plane.sh $(DIONYSUSD_BIN) pve/bin/dionysus-metricsd pve/bin/dionysus-pvedaemon pve/bin/dionysus-pveproxy pve/www/index.html packaging/systemd/dionysus-pve.env packaging/systemd/dionysus-network packaging/systemd/dionysus-network.env packaging/systemd/dionysus-network.service packaging/systemd/dionysus-metricsd.service packaging/systemd/dionysus-pvedaemon.service packaging/systemd/dionysus-pveproxy.service packaging/systemd/dionysus-llm-swap.service packaging/systemd/dionysus-llm-swap.env packaging/systemd/dionysus-llm-swap
+pve-control-plane-install: pve-check scripts/install-pve-control-plane.sh $(DIONYSUSD_BIN) pve/bin/dionysus-metricsd pve/bin/dionysus-pvedaemon pve/bin/dionysus-pveproxy $(PVE_UI_INDEX) packaging/systemd/dionysus-pve.env packaging/systemd/dionysus-network packaging/systemd/dionysus-network.env packaging/systemd/dionysus-network.service packaging/systemd/dionysus-metricsd.service packaging/systemd/dionysus-pvedaemon.service packaging/systemd/dionysus-pveproxy.service packaging/systemd/dionysus-llm-swap.service packaging/systemd/dionysus-llm-swap.env packaging/systemd/dionysus-llm-swap
 	@$(STATUS) info "Staging Proxmox-style Dionysus control plane in $(PVE_CONTROL_PLANE_ROOTFS)"
 	@DESTDIR="$(PVE_CONTROL_PLANE_ROOTFS)" DIONYSUSD_BIN="$(DIONYSUSD_BIN)" DIONYSUS_PROFILES_DIR="profiles" $(PVE_CONTROL_PLANE_INSTALL)
 

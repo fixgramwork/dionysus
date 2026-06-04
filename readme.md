@@ -57,8 +57,8 @@ Bootloader/Firmware -> Linux kernel -> kernel interfaces -> Dionysus agent -> di
 
 - Linux becomes the long-term kernel and hardware base.
 - Dionysus agent translates Linux interfaces into a product-specific resource model.
-- Rust `dionysusd` exposes Proxmox-style `/api2/json` control-plane APIs and audit-friendly workflows.
-- `dionysusd proxy` serves the management web on port `8006` with an ExtJS-style operator interface.
+- Go `dionysusd` exposes Proxmox-style `/api2/json` control-plane APIs and audit-friendly workflows.
+- `dionysusd proxy` serves the Svelte management web on port `8006` from inside the target OS.
 - Future package, Local LLM, and system status features extend the same control-plane model instead of introducing side channels.
 
 See [`docs/architecture/linux-base-control-plane.md`](docs/architecture/linux-base-control-plane.md) for the current architecture draft.
@@ -76,7 +76,7 @@ The repository boot direction is now Linux-only:
 
 | Track | What will be added |
 | --- | --- |
-| Application | Dionysus agent, Rust API2 daemon, pveproxy-style UI, and memory inspection primitives |
+| Application | Dionysus agent, Go API2 daemon, Svelte pveproxy-style UI, and memory inspection primitives |
 | Developer Experience | Linux initramfs, PVE control-plane install/run/test automation |
 | Quality | Formatting, linting, and CI checks |
 | Documentation | Usage examples, architecture notes, and control-plane contracts |
@@ -126,7 +126,7 @@ For a normal Linux root filesystem with systemd, stage Dionysus as an OS-managed
 make pve-control-plane-install
 ```
 
-That target installs the Rust `dionysusd` API/proxy/metrics daemon, workload profiles, persistent network defaults, and systemd units into `build/pve-control-plane-rootfs`.
+That target installs the Go `dionysusd` API/proxy/metrics daemon, Svelte assets, workload profiles, persistent network defaults, and systemd units into `build/pve-control-plane-rootfs`.
 For a real Ubuntu/Debian Ollama server, install directly on the host with:
 
 ```bash
@@ -160,7 +160,7 @@ If the product direction is "Ubuntu-style development on top of Linux", treat th
 Current repository convention:
 
 - upstream Linux checkout: `upstream/linux`
-- tracked Dionysus deltas: config fragments, optional patches, initramfs, agent, Rust PVE API daemon, and UI
+- tracked Dionysus deltas: config fragments, optional patches, initramfs, agent, Go PVE API daemon, and Svelte UI
 - current Linux fragment: [`config/linux/x86_64-dionysus.fragment`](config/linux/x86_64-dionysus.fragment)
 
 Bootstrap commands:
@@ -225,18 +225,19 @@ make raspi-boot RASPI_CONFIG_TARGET=bcm2712_defconfig RASPI_KERNEL_NAME=kernel_2
 
 The primary Linux-native application slice now follows a Proxmox-style stack:
 
-- `src/bin/dionysusd.rs`: Rust daemon for API, web proxy, metrics sampling, token auth, and Ollama RAM control
+- `cmd/dionysusd`: Go daemon for API, web proxy, metrics sampling, token auth, and Ollama RAM control
 - `pve/bin/dionysus-pvedaemon`: compatibility wrapper for `dionysusd api`
 - `pve/bin/dionysus-pveproxy`: compatibility wrapper for `dionysusd proxy`
 - `pve/bin/dionysus-metricsd`: compatibility wrapper for `dionysusd metricsd`
-- `pve/www/index.html`: ExtJS-style management interface without a frontend build step
+- `frontend/svelte`: Svelte source for the operator UI
+- `pve/www`: built Svelte management interface served by `dionysusd proxy`
 - `profiles/*.yaml`: sample Web, LLM, and DB policy profiles
 - `packaging/systemd/dionysus-network.service`: systemd unit for persistent LAN/Wi-Fi setup from `/etc/dionysus/network.env`
 - `packaging/systemd/dionysus-metricsd.service`: systemd unit for 30-second Ollama RAM sampling
 - `packaging/systemd/dionysus-pvedaemon.service`: systemd unit for the API daemon
 - `packaging/systemd/dionysus-pveproxy.service`: systemd unit for the management web proxy
 - `packaging/systemd/dionysus-llm-swap.service`: systemd unit for provisioning Local LLM swap before Ollama starts
-- `scripts/install-pve-control-plane.sh`: rootfs staging helper for installing the Rust daemon, profiles, and service files
+- `scripts/install-pve-control-plane.sh`: rootfs staging helper for installing the Go daemon, Svelte assets, profiles, and service files
 
 Verification commands for the application slice:
 
