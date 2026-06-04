@@ -9,7 +9,7 @@
 - [`branch-convention.md`](branch-convention.md): 브랜치 이름 형식과 작업 브랜치 분리 기준
 - [`issue-convention.md`](issue-convention.md): 이슈 제목, 템플릿 선택 기준, 완료 조건 작성 규칙
 - [`pull-request-convention.md`](pull-request-convention.md): PR 제목, 설명, 검증 기록, 리뷰 준비 규칙
-- [`code-convention.md`](code-convention.md): Rust, NASM, linker script, Makefile 작성 규칙
+- [`code-convention.md`](code-convention.md): Go/Svelte control plane, Rust, NASM, linker script, Makefile 작성 규칙
 - [`linux-base-convention.md`](linux-base-convention.md): upstream Linux를 제품 베이스로 사용할 때의 기록 기준과 변경 우선순위
 
 ## 기본 원칙

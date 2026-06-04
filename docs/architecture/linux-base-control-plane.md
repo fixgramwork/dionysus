@@ -50,8 +50,8 @@ Bootloader/Firmware -> Linux kernel -> kernel interfaces -> Dionysus agent -> di
 | Linux kernel | 하드웨어 추상화, 프로세스/메모리/파일시스템/네트워크 핵심 기능 제공 | 검증된 운영체제 기반 | Dionysus UI, 운영자 워크플로 구현 |
 | Kernel interfaces | 커널 상태와 제어 기능을 표준 계약으로 노출 | 안정된 조회/제어 엔트리포인트 | 제품별 UX 정책 강제 |
 | Dionysus agent | Linux 인터페이스 수집, 정책 적용, 안전한 자원 모델 구성 | Dionysus resource model, 감사 가능한 요청 처리 | Linux 핵심 기능 재구현 |
-| Rust `dionysusd` API daemon | token auth, API 집계, RAM/Ollama metric 기록, 명시적 최적화 적용 | Proxmox-style `/api2/json` 운영자 API | 커널 우회 직접 제어 |
-| pveproxy-compatible UI | 상태 시각화, diff, 승인 플로우, 제한된 조작 UX | 운영자 화면과 안전한 상호작용 | 정책 원천 결정 |
+| Go `dionysusd` API daemon | token auth, API 집계, RAM/Ollama metric 기록, 명시적 최적화 적용 | Proxmox-style `/api2/json` 운영자 API | 커널 우회 직접 제어 |
+| Svelte pveproxy-compatible UI | 상태 시각화, diff, 승인 플로우, 제한된 조작 UX | 운영자 화면과 안전한 상호작용 | 정책 원천 결정 |
 
 ## OS 내부 관리 웹 실행 모델
 
@@ -76,7 +76,7 @@ initramfs는 `/proc`, `/sys`, 네트워크, 부트 상태를 확인하고 rescue
 이 구조에서 호스트 OS가 살아 있으면 관리 웹도 살아 있고, 호스트 OS 자체가 종료되면 관리 웹도 함께 종료됩니다.
 VM이나 컨테이너 같은 게스트의 상태는 호스트 OS 내부의 Dionysus 서비스가 관찰하고 제어합니다.
 
-systemd rootfs의 기본 관리 화면은 Rust `dionysusd proxy` 가 제공합니다.
+systemd rootfs의 기본 관리 화면은 Go `dionysusd proxy` 가 Svelte 빌드 결과를 제공하는 방식으로 실행합니다.
 
 ## Local LLM 최적화 방향
 
@@ -142,7 +142,7 @@ Linux 베이스 전환 이후 첫 구현 범위는 다음으로 제한합니다.
 2. initramfs에서 Dionysus agent를 시작한다.
 3. agent가 `system_memory_map` 과 `kernel_health` 를 수집한다.
 4. agent가 Dionysus 전용 `lab_buffer` 를 읽고 쓸 수 있는 제한된 API를 제공한다.
-5. Rust API2 daemon과 pveproxy UI는 이 자원만 노출한다.
+5. Go API2 daemon과 Svelte pveproxy UI는 이 자원만 노출한다.
 
 이 수직 슬라이스로 증명하려는 것은 다음입니다.
 
@@ -173,7 +173,7 @@ Linux 베이스 전환 이후 첫 구현 범위는 다음으로 제한합니다.
 
 ### 4. 제어 평면 확장
 
-- Rust `dionysusd` API daemon에서 인증, audit, rate limit 추가
+- Go `dionysusd` API daemon에서 인증, audit, rate limit 추가
 - pveproxy UI에서 읽기 전용 상태와 제한된 patch UX 구현
 
 ## 금지된 방향

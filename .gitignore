@@ -1,3 +1,5 @@
 /build/
 /target/
 /upstream/linux/
+/.gocache/
+node_modules/
