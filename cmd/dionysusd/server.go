@@ -93,6 +93,13 @@ func handleAPI(cfg Config, request *http.Request) (any, int, error) {
 		return nodeStatus(cfg), http.StatusOK, nil
 	case "GET /api2/json/nodes/localhost/services":
 		return serviceStatus(), http.StatusOK, nil
+	case "POST /api2/json/nodes/localhost/console/exec":
+		body := readJSONBody(request)
+		data, err := runConsoleCommand(cfg, body)
+		if err != nil {
+			return nil, http.StatusBadRequest, err
+		}
+		return data, http.StatusOK, nil
 	case "GET /api2/json/nodes/localhost/network/status":
 		return networkStatus(cfg), http.StatusOK, nil
 	case "GET /api2/json/nodes/localhost/network/config":

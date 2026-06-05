@@ -142,6 +142,23 @@ func TestReadsARMCPUModelFromCPUInfo(t *testing.T) {
 	}
 }
 
+func TestConsoleCommandReturnsOutputAndExitCode(t *testing.T) {
+	root := uniqueTempDir(t, "console")
+	result, err := runConsoleCommand(testConfig(root), map[string]any{
+		"command": "printf 'hello'; printf 'warn' >&2; exit 7",
+		"cwd":     root,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if asString(result["stdout"]) != "hello" || asString(result["stderr"]) != "warn" {
+		t.Fatalf("console output mismatch: %#v", result)
+	}
+	if asInt64(result["exitCode"]) != 7 {
+		t.Fatalf("console exit code mismatch: %#v", result)
+	}
+}
+
 func TestTargetOSGuardRequiresRuntimeUnlessDevOverrideIsExplicit(t *testing.T) {
 	root := uniqueTempDir(t, "runtime-guard")
 	cfg := testConfig(root)
