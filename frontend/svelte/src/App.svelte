@@ -38,6 +38,10 @@
   let ollama = null;
   let history = [];
   let consoleLines = [];
+  let consoleCommand = 'uname -a';
+  let consoleCwd = '/';
+  let consoleRunning = false;
+  let terminalEntries = [];
 
   function clone(value) {
     return JSON.parse(JSON.stringify(value || {}));
@@ -142,6 +146,40 @@
     } catch (err) {
       error = err.message;
       pushConsole('error', err.message);
+    }
+  }
+
+  async function runConsoleCommand() {
+    const command = consoleCommand.trim();
+    if (!command || consoleRunning) return;
+    const cwd = consoleCwd.trim() || '/';
+    consoleRunning = true;
+    try {
+      const result = await postJSON('/api2/json/nodes/localhost/console/exec', { command, cwd });
+      terminalEntries = [
+        {
+          at: new Date().toLocaleTimeString(),
+          ...result
+        },
+        ...terminalEntries
+      ].slice(0, 20);
+      pushConsole(result.exitCode === 0 ? 'info' : 'warn', `command exited ${result.exitCode}: ${command}`);
+    } catch (err) {
+      terminalEntries = [
+        {
+          at: new Date().toLocaleTimeString(),
+          command,
+          cwd,
+          exitCode: -1,
+          stderr: err.message,
+          stdout: '',
+          timedOut: false
+        },
+        ...terminalEntries
+      ].slice(0, 20);
+      pushConsole('error', err.message);
+    } finally {
+      consoleRunning = false;
     }
   }
 
@@ -499,8 +537,50 @@
         </section>
       {:else}
         <section class="panel console-panel">
-          <h2>Operator Console</h2>
-          <div class="console">
+          <h2>Web CLI</h2>
+          <form class="cli-form" on:submit|preventDefault={runConsoleCommand}>
+            <label class="cwd-input">
+              <span>cwd</span>
+              <input bind:value={consoleCwd} autocomplete="off" spellcheck="false" />
+            </label>
+            <label class="command-input">
+              <span>$</span>
+              <input bind:value={consoleCommand} autocomplete="off" spellcheck="false" />
+            </label>
+            <button class="primary" type="submit" disabled={consoleRunning || !consoleCommand.trim()}>
+              <Play size={15} />
+              Run
+            </button>
+          </form>
+
+          <div class="terminal">
+            {#if terminalEntries.length === 0}
+              <div class="terminal-empty">No commands executed in this browser session.</div>
+            {/if}
+            {#each terminalEntries as entry}
+              <article class:failed={entry.exitCode !== 0}>
+                <header>
+                  <span>{entry.at}</span>
+                  <strong>{entry.cwd || '/'} $ {entry.command}</strong>
+                  <em>exit {entry.exitCode} · {entry.durationMillis || 0} ms{entry.timedOut ? ' · timeout' : ''}</em>
+                </header>
+                {#if entry.stdout}
+                  <pre>{entry.stdout}{entry.stdoutTruncated ? '\n[stdout truncated]' : ''}</pre>
+                {/if}
+                {#if entry.stderr}
+                  <pre class="stderr">{entry.stderr}{entry.stderrTruncated ? '\n[stderr truncated]' : ''}</pre>
+                {/if}
+                {#if !entry.stdout && !entry.stderr}
+                  <pre class="muted-output">(no output)</pre>
+                {/if}
+              </article>
+            {/each}
+          </div>
+        </section>
+
+        <section class="panel console-panel">
+          <h2>Operator Log</h2>
+          <div class="console-log">
             {#each consoleLines as line}
               <div class={line.level}><span>{line.at}</span>{line.message}</div>
             {/each}
