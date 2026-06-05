@@ -132,6 +132,16 @@ func TestCPUUsageDeltaFromProcStat(t *testing.T) {
 	}
 }
 
+func TestReadsARMCPUModelFromCPUInfo(t *testing.T) {
+	root := uniqueTempDir(t, "arm-cpuinfo")
+	procRoot := filepath.Join(root, "proc")
+	writeFile(t, filepath.Join(procRoot, "cpuinfo"), "processor\t: 0\nBogoMIPS\t: 125.00\nFeatures\t: fp asimd aes pmull sha1 sha2 crc32 cpuid\nCPU implementer\t: 0x41\nCPU architecture: 8\nCPU variant\t: 0x1\nCPU part\t: 0xd07\nCPU revision\t: 0\n\nprocessor\t: 1\nBogoMIPS\t: 125.00\nCPU implementer\t: 0x41\nCPU architecture: 8\nCPU part\t: 0xd07\n")
+
+	if got := readCPUModel(procRoot); got != "ARM Cortex-A57 (ARMv8)" {
+		t.Fatalf("arm cpu model mismatch: %q", got)
+	}
+}
+
 func TestTargetOSGuardRequiresRuntimeUnlessDevOverrideIsExplicit(t *testing.T) {
 	root := uniqueTempDir(t, "runtime-guard")
 	cfg := testConfig(root)

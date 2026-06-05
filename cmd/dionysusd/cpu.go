@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -161,10 +162,11 @@ func percentOf(value int64, total int64) float64 {
 	return float64(value) / float64(total) * 100
 }
 
+// CPU 정보 받아오는 함수
 func readCPUModel(procRoot string) string {
 	content, err := os.ReadFile(filepath.Join(procRoot, "cpuinfo"))
 	if err != nil {
-		return ""
+		return fmt.Sprintf("we couldn't read cpuinfo {e: %v}", err) // procRoot에서 정보 못 읽어 올경우 발생
 	}
 
 	values := map[string]string{}
@@ -184,10 +186,37 @@ func readCPUModel(procRoot string) string {
 			return values[key]
 		}
 	}
+	if model := armCPUModel(values); model != "" {
+		return model
+	}
 	if _, err := strconv.Atoi(values["processor"]); err != nil {
 		return values["processor"]
 	}
 	return ""
+}
+
+func armCPUModel(values map[string]string) string {
+	architecture := values["cpu architecture"]
+	implementer := strings.ToLower(values["cpu implementer"])
+	part := strings.ToLower(values["cpu part"])
+	if architecture == "" && implementer == "" && part == "" {
+		return ""
+	}
+
+	name := ""
+	if implementer == "0x41" && part == "0xd07" {
+		name = "ARM Cortex-A57"
+	}
+	if name == "" {
+		name = "ARM CPU"
+		if implementer != "" || part != "" {
+			name += " " + strings.TrimSpace(strings.Join([]string{implementer, part}, " "))
+		}
+	}
+	if architecture != "" {
+		name += " (ARMv" + architecture + ")"
+	}
+	return name
 }
 
 func readCPUCoreCount(procRoot string) int {
