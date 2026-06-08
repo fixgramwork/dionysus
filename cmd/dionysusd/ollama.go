@@ -1,11 +1,16 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
+	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -82,22 +87,13 @@ func ollamaAPIStatus(base string) map[string]any {
 }
 
 func parseOllamaAPI(tags OllamaGet, version OllamaGet, ps OllamaGet) map[string]any {
-	var models []any
-	for _, item := range asSlice(tags.Data["models"]) {
-		model := asMap(item)
-		models = append(models, map[string]any{
-			"name":       asString(model["name"]),
-			"size":       asInt64(model["size"]),
-			"digest":     asString(model["digest"]),
-			"modifiedAt": asString(model["modified_at"]),
-		})
-	}
-
-	var loadedModels []any
+	loadedModels := []any{}
+	var loadedModelNames []string
 	for _, item := range asSlice(ps.Data["models"]) {
 		model := asMap(item)
 		details := asMap(model["details"])
 		name := firstNonEmpty(asString(model["model"]), asString(model["name"]))
+		loadedModelNames = append(loadedModelNames, name, asString(model["name"]))
 		loadedModels = append(loadedModels, map[string]any{
 			"name":          asString(model["name"]),
 			"model":         name,
@@ -106,6 +102,26 @@ func parseOllamaAPI(tags OllamaGet, version OllamaGet, ps OllamaGet) map[string]
 			"digest":        asString(model["digest"]),
 			"expiresAt":     asString(model["expires_at"]),
 			"contextLength": asInt64(model["context_length"]),
+			"details": map[string]any{
+				"format":            asString(details["format"]),
+				"family":            asString(details["family"]),
+				"parameterSize":     asString(details["parameter_size"]),
+				"quantizationLevel": asString(details["quantization_level"]),
+			},
+		})
+	}
+
+	models := []any{}
+	for _, item := range asSlice(tags.Data["models"]) {
+		model := asMap(item)
+		details := asMap(model["details"])
+		name := asString(model["name"])
+		models = append(models, map[string]any{
+			"name":       name,
+			"size":       asInt64(model["size"]),
+			"digest":     asString(model["digest"]),
+			"modifiedAt": asString(model["modified_at"]),
+			"running":    ollamaModelNameMatches(name, loadedModelNames),
 			"details": map[string]any{
 				"format":            asString(details["format"]),
 				"family":            asString(details["family"]),
@@ -223,6 +239,337 @@ func applyOllamaProfile(cfg Config, dryRun bool) map[string]any {
 		"writes":  writes,
 		"console": kvCacheConsole(status, dryRun, written, skipped, failed, after),
 	}
+}
+
+func applyOllamaServiceAction(cfg Config, body map[string]any) (map[string]any, error) {
+	action := jsonString(body, "action", "")
+	if err := validateChoice(action, []string{"start", "stop", "restart"}, "Ollama service action"); err != nil {
+		return nil, err
+	}
+
+	command := fmt.Sprintf("systemctl %s ollama.service", action)
+	if cfg.DevAllowHost {
+		return map[string]any{
+			"action":  action,
+			"command": command,
+			"status":  "dev-skip",
+			"reason":  "development host override is enabled; service action was not executed",
+			"service": service("ollama"),
+		}, nil
+	}
+
+	output, err := exec.Command("systemctl", action, "ollama.service").CombinedOutput()
+	result := map[string]any{
+		"action":  action,
+		"command": command,
+		"service": service("ollama"),
+	}
+	if err != nil {
+		result["status"] = "failed"
+		result["error"] = strings.TrimSpace(string(output))
+		return result, nil
+	}
+	result["status"] = map[string]string{
+		"start":   "started",
+		"stop":    "stopped",
+		"restart": "restarted",
+	}[action]
+	result["exitCode"] = 0
+	result["stdout"] = strings.TrimSpace(string(output))
+	result["stderr"] = ""
+	return result, nil
+}
+
+func runOllamaModel(cfg Config, body map[string]any) (map[string]any, error) {
+	model, err := cleanOllamaModelName(jsonString(body, "model", ""))
+	if err != nil {
+		return nil, err
+	}
+	keepAlive, err := cleanOllamaKeepAlive(jsonString(body, "keepAlive", "30m"))
+	if err != nil {
+		return nil, err
+	}
+	data, err := ollamaPostJSON(cfg.OllamaAPI, "/api/generate", map[string]any{
+		"model":      model,
+		"prompt":     "",
+		"stream":     false,
+		"keep_alive": keepAlive,
+	}, 10*time.Minute)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{
+		"action":    "run",
+		"model":     model,
+		"keepAlive": keepAlive,
+		"status":    "requested",
+		"api":       data,
+		"ollama":    ollamaStatus(cfg),
+	}, nil
+}
+
+func stopOllamaModel(cfg Config, body map[string]any) (map[string]any, error) {
+	model, err := cleanOllamaModelName(jsonString(body, "model", ""))
+	if err != nil {
+		return nil, err
+	}
+	data, err := ollamaPostJSON(cfg.OllamaAPI, "/api/generate", map[string]any{
+		"model":      model,
+		"prompt":     "",
+		"stream":     false,
+		"keep_alive": 0,
+	}, time.Minute)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{
+		"action": "stop",
+		"model":  model,
+		"status": "requested",
+		"api":    data,
+		"ollama": ollamaStatus(cfg),
+	}, nil
+}
+
+func pullOllamaModel(cfg Config, body map[string]any) (map[string]any, error) {
+	model, err := cleanOllamaModelName(jsonString(body, "model", ""))
+	if err != nil {
+		return nil, err
+	}
+	data, err := ollamaPostJSON(cfg.OllamaAPI, "/api/pull", map[string]any{
+		"name":   model,
+		"stream": false,
+	}, 30*time.Minute)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{
+		"action": "pull",
+		"model":  model,
+		"status": firstNonEmpty(asString(data["status"]), "pulled"),
+		"api":    data,
+		"ollama": ollamaStatus(cfg),
+	}, nil
+}
+
+func searchOllamaLibrary(query string) map[string]any {
+	cleaned := strings.TrimSpace(query)
+	source := "fallback"
+	results := fallbackOllamaLibraryResults(cleaned)
+	liveResults, err := fetchOllamaLibrarySearch(cleaned)
+	if err == nil && len(liveResults) > 0 {
+		source = "ollama.com"
+		results = mergeOllamaLibraryResults(liveResults, results)
+	}
+	payload := map[string]any{
+		"query":   cleaned,
+		"source":  source,
+		"results": results,
+	}
+	if err != nil {
+		payload["warning"] = err.Error()
+	}
+	return payload
+}
+
+func fetchOllamaLibrarySearch(query string) ([]any, error) {
+	cleaned, err := cleanOllamaSearchQuery(query)
+	if err != nil {
+		return nil, err
+	}
+	if cleaned == "" {
+		cleaned = "llama"
+	}
+	client := http.Client{Timeout: 5 * time.Second}
+	response, err := client.Get("https://ollama.com/search?q=" + url.QueryEscape(cleaned))
+	if err != nil {
+		return nil, err
+	}
+	defer response.Body.Close()
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		return nil, fmt.Errorf("ollama library search returned http status %d", response.StatusCode)
+	}
+	content, err := io.ReadAll(io.LimitReader(response.Body, 1024*1024))
+	if err != nil {
+		return nil, err
+	}
+	results := parseOllamaSearchHTML(string(content))
+	if len(results) == 0 {
+		return nil, fmt.Errorf("ollama library search returned no models")
+	}
+	return results, nil
+}
+
+func parseOllamaSearchHTML(content string) []any {
+	pattern := regexp.MustCompile(`href=["']/library/([A-Za-z0-9][A-Za-z0-9._-]*)["']`)
+	matches := pattern.FindAllStringSubmatch(content, -1)
+	seen := map[string]bool{}
+	var results []any
+	for _, match := range matches {
+		name := match[1]
+		key := strings.ToLower(name)
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		results = append(results, map[string]any{
+			"name":        name,
+			"title":       name,
+			"pullName":    name,
+			"description": "Ollama library model",
+			"source":      "ollama.com",
+		})
+		if len(results) >= 24 {
+			break
+		}
+	}
+	return results
+}
+
+func fallbackOllamaLibraryResults(query string) []any {
+	catalog := []map[string]string{
+		{"name": "llama3.2", "title": "llama3.2", "description": "Meta Llama 3.2 general-purpose text model"},
+		{"name": "llama3.1", "title": "llama3.1", "description": "Meta Llama 3.1 instruction model"},
+		{"name": "gemma3", "title": "gemma3", "description": "Google Gemma 3 family"},
+		{"name": "qwen3", "title": "qwen3", "description": "Alibaba Qwen 3 instruction model"},
+		{"name": "deepseek-r1", "title": "deepseek-r1", "description": "DeepSeek R1 reasoning model"},
+		{"name": "mistral", "title": "mistral", "description": "Mistral general-purpose model"},
+		{"name": "phi4", "title": "phi4", "description": "Microsoft Phi 4 compact reasoning model"},
+		{"name": "nomic-embed-text", "title": "nomic-embed-text", "description": "Text embedding model"},
+		{"name": "codellama", "title": "codellama", "description": "Code-focused Llama model"},
+		{"name": "tinyllama", "title": "tinyllama", "description": "Small local model for low-memory targets"},
+	}
+	needle := strings.ToLower(strings.TrimSpace(query))
+	var results []any
+	for _, item := range catalog {
+		if needle != "" && !strings.Contains(strings.ToLower(item["name"]+" "+item["description"]), needle) {
+			continue
+		}
+		results = append(results, map[string]any{
+			"name":        item["name"],
+			"title":       item["title"],
+			"pullName":    item["name"],
+			"description": item["description"],
+			"source":      "fallback",
+		})
+	}
+	if len(results) == 0 && needle != "" {
+		results = append(results, map[string]any{
+			"name":        query,
+			"title":       query,
+			"pullName":    query,
+			"description": "Direct model name",
+			"source":      "direct",
+		})
+	}
+	return results
+}
+
+func mergeOllamaLibraryResults(primary []any, fallback []any) []any {
+	seen := map[string]bool{}
+	var merged []any
+	for _, items := range [][]any{primary, fallback} {
+		for _, item := range items {
+			name := strings.ToLower(asString(asMap(item)["pullName"]))
+			if name == "" {
+				name = strings.ToLower(asString(asMap(item)["name"]))
+			}
+			if name == "" || seen[name] {
+				continue
+			}
+			seen[name] = true
+			merged = append(merged, item)
+		}
+	}
+	return merged
+}
+
+func ollamaPostJSON(base string, endpoint string, payload map[string]any, timeout time.Duration) (map[string]any, error) {
+	var requestBody bytes.Buffer
+	if err := json.NewEncoder(&requestBody).Encode(payload); err != nil {
+		return nil, err
+	}
+	request, err := http.NewRequest(http.MethodPost, base+endpoint, &requestBody)
+	if err != nil {
+		return nil, err
+	}
+	request.Header.Set("Content-Type", "application/json")
+	client := http.Client{Timeout: timeout}
+	response, err := client.Do(request)
+	if err != nil {
+		return nil, err
+	}
+	defer response.Body.Close()
+	content, err := io.ReadAll(io.LimitReader(response.Body, 4*1024*1024))
+	if err != nil {
+		return nil, err
+	}
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		message := strings.TrimSpace(string(content))
+		if message == "" {
+			message = fmt.Sprintf("http status %d", response.StatusCode)
+		}
+		return nil, fmt.Errorf("ollama %s failed: %s", endpoint, message)
+	}
+	if len(strings.TrimSpace(string(content))) == 0 {
+		return map[string]any{}, nil
+	}
+	var data map[string]any
+	if err := json.Unmarshal(content, &data); err != nil {
+		return map[string]any{"raw": strings.TrimSpace(string(content))}, nil
+	}
+	return data, nil
+}
+
+func cleanOllamaModelName(value string) (string, error) {
+	model := strings.TrimSpace(value)
+	if model == "" {
+		return "", fmt.Errorf("Ollama model name is required")
+	}
+	if len(model) > 200 {
+		return "", fmt.Errorf("Ollama model name is too long")
+	}
+	for _, ch := range model {
+		if !(ch >= 'a' && ch <= 'z' || ch >= 'A' && ch <= 'Z' || ch >= '0' && ch <= '9' || ch == '.' || ch == '_' || ch == '-' || ch == ':' || ch == '/') {
+			return "", fmt.Errorf("invalid Ollama model name: %s", model)
+		}
+	}
+	if strings.HasPrefix(model, "/") || strings.HasSuffix(model, "/") || strings.Contains(model, "//") {
+		return "", fmt.Errorf("invalid Ollama model name: %s", model)
+	}
+	for _, segment := range strings.Split(model, "/") {
+		if segment == "." || segment == ".." {
+			return "", fmt.Errorf("invalid Ollama model name: %s", model)
+		}
+	}
+	return model, nil
+}
+
+func cleanOllamaKeepAlive(value string) (string, error) {
+	keepAlive := strings.TrimSpace(value)
+	if keepAlive == "" {
+		return "30m", nil
+	}
+	if len(keepAlive) > 32 {
+		return "", fmt.Errorf("Ollama keepAlive is too long")
+	}
+	for _, ch := range keepAlive {
+		if !(ch >= '0' && ch <= '9' || ch == 'h' || ch == 'm' || ch == 's') {
+			return "", fmt.Errorf("invalid Ollama keepAlive value: %s", keepAlive)
+		}
+	}
+	return keepAlive, nil
+}
+
+func cleanOllamaSearchQuery(value string) (string, error) {
+	cleaned := strings.TrimSpace(value)
+	if len(cleaned) > 120 {
+		return "", fmt.Errorf("Ollama search query is too long")
+	}
+	if strings.ContainsAny(cleaned, "\n\r\x00") {
+		return "", fmt.Errorf("Ollama search query must be a single line")
+	}
+	return cleaned, nil
 }
 
 func kvCacheTargets(cfg Config) []KernelTarget {
@@ -403,8 +750,7 @@ func ollamaProcesses(procRoot string) []any {
 		dir := filepath.Join(procRoot, name)
 		comm := readTrim(filepath.Join(dir, "comm"))
 		cmdline := strings.ReplaceAll(readTrim(filepath.Join(dir, "cmdline")), "\x00", " ")
-		search := strings.ToLower(comm + " " + cmdline)
-		if !strings.Contains(search, "ollama") && !strings.Contains(search, "llama") {
+		if !isOllamaProcess(comm, cmdline) {
 			continue
 		}
 		status := processStatus(filepath.Join(dir, "status"))
@@ -421,6 +767,19 @@ func ollamaProcesses(procRoot string) []any {
 		return asInt64(asMap(processes[left])["pid"]) < asInt64(asMap(processes[right])["pid"])
 	})
 	return processes
+}
+
+func isOllamaProcess(comm string, cmdline string) bool {
+	name := strings.ToLower(strings.TrimSpace(comm))
+	if name == "ollama" || name == "llama-server" {
+		return true
+	}
+	fields := strings.Fields(cmdline)
+	if len(fields) == 0 {
+		return false
+	}
+	executable := strings.ToLower(filepath.Base(fields[0]))
+	return executable == "ollama" || executable == "llama-server" || strings.HasPrefix(executable, "ollama-") || strings.HasPrefix(executable, "llama-")
 }
 
 func processStatus(path string) map[string]int64 {
@@ -507,6 +866,35 @@ func loadedModelSummary(models []any) map[string]any {
 		sizeVRAM += asInt64(model["sizeVram"])
 	}
 	return map[string]any{"count": len(models), "size": size, "sizeVram": sizeVRAM}
+}
+
+func ollamaModelNameMatches(name string, candidates []string) bool {
+	targets := ollamaModelAliases(name)
+	for _, candidate := range candidates {
+		aliases := ollamaModelAliases(candidate)
+		for _, target := range targets {
+			for _, alias := range aliases {
+				if target != "" && target == alias {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+func ollamaModelAliases(value string) []string {
+	cleaned := strings.ToLower(strings.TrimSpace(value))
+	if cleaned == "" {
+		return nil
+	}
+	aliases := []string{cleaned}
+	if strings.HasSuffix(cleaned, ":latest") {
+		aliases = append(aliases, strings.TrimSuffix(cleaned, ":latest"))
+	} else if !strings.Contains(cleaned, ":") {
+		aliases = append(aliases, cleaned+":latest")
+	}
+	return aliases
 }
 
 func recommendations(status map[string]any) []any {

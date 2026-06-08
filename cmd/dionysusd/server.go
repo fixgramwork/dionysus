@@ -97,16 +97,37 @@ func handleAPI(cfg Config, request *http.Request) (any, int, error) {
 			return nil, http.StatusInternalServerError, err
 		}
 		return data, http.StatusOK, nil
+	case "GET /api2/json/access/permissions":
+		return authPermissionViews(), http.StatusOK, nil
 	case "POST /api2/json/access/users":
+		session, err := currentSession(cfg, request)
+		if err != nil {
+			return nil, http.StatusUnauthorized, err
+		}
 		body := readJSONBody(request)
-		data, err := createAuthUser(cfg, body)
+		data, err := createAuthUser(cfg, asString(session["username"]), body)
+		if err != nil {
+			return nil, http.StatusBadRequest, err
+		}
+		return data, http.StatusOK, nil
+	case "POST /api2/json/access/users/update":
+		session, err := currentSession(cfg, request)
+		if err != nil {
+			return nil, http.StatusUnauthorized, err
+		}
+		body := readJSONBody(request)
+		data, err := updateAuthUser(cfg, asString(session["username"]), body)
 		if err != nil {
 			return nil, http.StatusBadRequest, err
 		}
 		return data, http.StatusOK, nil
 	case "POST /api2/json/access/users/password":
+		session, err := currentSession(cfg, request)
+		if err != nil {
+			return nil, http.StatusUnauthorized, err
+		}
 		body := readJSONBody(request)
-		data, err := updateAuthUserPassword(cfg, body)
+		data, err := updateAuthUserPassword(cfg, asString(session["username"]), body)
 		if err != nil {
 			return nil, http.StatusBadRequest, err
 		}
@@ -165,6 +186,36 @@ func handleAPI(cfg Config, request *http.Request) (any, int, error) {
 		return applyNetworkService(cfg, jsonBool(body, "dryRun", false)), http.StatusOK, nil
 	case "GET /api2/json/nodes/localhost/ollama/status":
 		return ollamaStatus(cfg), http.StatusOK, nil
+	case "GET /api2/json/nodes/localhost/ollama/library/search":
+		return searchOllamaLibrary(request.URL.Query().Get("q")), http.StatusOK, nil
+	case "POST /api2/json/nodes/localhost/ollama/service":
+		body := readJSONBody(request)
+		data, err := applyOllamaServiceAction(cfg, body)
+		if err != nil {
+			return nil, http.StatusBadRequest, err
+		}
+		return data, http.StatusOK, nil
+	case "POST /api2/json/nodes/localhost/ollama/models/run":
+		body := readJSONBody(request)
+		data, err := runOllamaModel(cfg, body)
+		if err != nil {
+			return nil, http.StatusBadRequest, err
+		}
+		return data, http.StatusOK, nil
+	case "POST /api2/json/nodes/localhost/ollama/models/stop":
+		body := readJSONBody(request)
+		data, err := stopOllamaModel(cfg, body)
+		if err != nil {
+			return nil, http.StatusBadRequest, err
+		}
+		return data, http.StatusOK, nil
+	case "POST /api2/json/nodes/localhost/ollama/models/pull":
+		body := readJSONBody(request)
+		data, err := pullOllamaModel(cfg, body)
+		if err != nil {
+			return nil, http.StatusBadRequest, err
+		}
+		return data, http.StatusOK, nil
 	case "GET /api2/json/nodes/localhost/ollama/kv-cache/profile":
 		return kvCacheProfileStatus(cfg), http.StatusOK, nil
 	case "GET /api2/json/nodes/localhost/ollama/history":

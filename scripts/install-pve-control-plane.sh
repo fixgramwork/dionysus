@@ -249,6 +249,13 @@ install_auth_credentials() {
     {
       "username": "$DIONYSUS_PVE_USERNAME",
       "passwordHash": "$password_hash",
+      "permissions": [
+        "node.read",
+        "network.manage",
+        "llm.manage",
+        "services.manage",
+        "console.run"
+      ],
       "createdAt": $created_at,
       "updatedAt": $created_at
     }

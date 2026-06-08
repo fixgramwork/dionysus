@@ -47,10 +47,12 @@ func loginTicket(cfg Config, body map[string]any) (map[string]any, error) {
 		return nil, err
 	}
 	return map[string]any{
-		"tokenType": "Bearer",
-		"token":     token,
-		"username":  user.Username,
-		"expiresAt": expiresAt,
+		"tokenType":      "Bearer",
+		"token":          token,
+		"username":       user.Username,
+		"permissions":    user.Permissions,
+		"canManageUsers": user.Username == rootAuthUsername,
+		"expiresAt":      expiresAt,
 	}, nil
 }
 
@@ -163,9 +165,18 @@ func currentSession(cfg Config, request *http.Request) (map[string]any, error) {
 	if err != nil {
 		return nil, err
 	}
+	user, ok, err := authUserByUsername(cfg, claims.Subject)
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
+		return nil, fmt.Errorf("jwt subject is not allowed")
+	}
 	return map[string]any{
-		"username":  claims.Subject,
-		"expiresAt": claims.ExpiresAt,
+		"username":       claims.Subject,
+		"permissions":    user.Permissions,
+		"canManageUsers": user.Username == rootAuthUsername,
+		"expiresAt":      claims.ExpiresAt,
 	}, nil
 }
 

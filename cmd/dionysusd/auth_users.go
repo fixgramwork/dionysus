@@ -14,14 +14,31 @@ import (
 )
 
 type authUser struct {
-	Username     string `json:"username"`
-	PasswordHash string `json:"passwordHash"`
-	CreatedAt    int64  `json:"createdAt"`
-	UpdatedAt    int64  `json:"updatedAt"`
+	Username     string   `json:"username"`
+	PasswordHash string   `json:"passwordHash"`
+	Permissions  []string `json:"permissions,omitempty"`
+	CreatedAt    int64    `json:"createdAt"`
+	UpdatedAt    int64    `json:"updatedAt"`
 }
 
 type authUserStore struct {
 	Users []authUser `json:"users"`
+}
+
+type authPermission struct {
+	ID          string `json:"id"`
+	Label       string `json:"label"`
+	Description string `json:"description"`
+}
+
+const rootAuthUsername = "root"
+
+var authPermissionCatalog = []authPermission{
+	{ID: "node.read", Label: "Node status", Description: "Read node status, metrics, and inventory"},
+	{ID: "network.manage", Label: "Network", Description: "Preview, save, and apply network settings"},
+	{ID: "llm.manage", Label: "Local LLM", Description: "Read and apply local LLM runtime tuning"},
+	{ID: "services.manage", Label: "Services", Description: "Read service state and perform service operations"},
+	{ID: "console.run", Label: "Console", Description: "Run commands through the web console"},
 }
 
 var authUsersMu sync.Mutex
@@ -36,6 +53,22 @@ func loginUser(cfg Config, username string, password string) (authUser, bool, er
 	}
 	for _, user := range users {
 		if constantTimeEqual(user.Username, username) && verifyPassword(user.PasswordHash, password) {
+			return user, true, nil
+		}
+	}
+	return authUser{}, false, nil
+}
+
+func authUserByUsername(cfg Config, username string) (authUser, bool, error) {
+	authUsersMu.Lock()
+	defer authUsersMu.Unlock()
+
+	users, err := readAuthUsersUnlocked(cfg)
+	if err != nil {
+		return authUser{}, false, err
+	}
+	for _, user := range users {
+		if user.Username == username {
 			return user, true, nil
 		}
 	}
@@ -73,13 +106,33 @@ func authUserViews(cfg Config) ([]any, error) {
 	return views, nil
 }
 
-func createAuthUser(cfg Config, body map[string]any) (map[string]any, error) {
+func authPermissionViews() []any {
+	views := make([]any, 0, len(authPermissionCatalog))
+	for _, permission := range authPermissionCatalog {
+		views = append(views, map[string]any{
+			"id":          permission.ID,
+			"label":       permission.Label,
+			"description": permission.Description,
+		})
+	}
+	return views
+}
+
+func createAuthUser(cfg Config, currentUsername string, body map[string]any) (map[string]any, error) {
+	if err := requireRootAuthUser(currentUsername); err != nil {
+		return nil, err
+	}
+
 	username := strings.TrimSpace(asString(body["username"]))
 	password := asString(body["password"])
 	if err := validateAuthUsername(username); err != nil {
 		return nil, err
 	}
 	if err := validateAuthPassword(password); err != nil {
+		return nil, err
+	}
+	permissions, err := normalizeRequestedAuthPermissions(username, authPermissionsFromValue(body["permissions"]))
+	if err != nil {
 		return nil, err
 	}
 
@@ -100,6 +153,7 @@ func createAuthUser(cfg Config, body map[string]any) (map[string]any, error) {
 	user := authUser{
 		Username:     username,
 		PasswordHash: hashPassword(password),
+		Permissions:  permissions,
 		CreatedAt:    now,
 		UpdatedAt:    now,
 	}
@@ -110,7 +164,55 @@ func createAuthUser(cfg Config, body map[string]any) (map[string]any, error) {
 	return publicAuthUser(user), nil
 }
 
-func updateAuthUserPassword(cfg Config, body map[string]any) (map[string]any, error) {
+func updateAuthUser(cfg Config, currentUsername string, body map[string]any) (map[string]any, error) {
+	if err := requireRootAuthUser(currentUsername); err != nil {
+		return nil, err
+	}
+
+	username := strings.TrimSpace(asString(body["username"]))
+	password := asString(body["password"])
+	if err := validateAuthUsername(username); err != nil {
+		return nil, err
+	}
+	if password != "" {
+		if err := validateAuthPassword(password); err != nil {
+			return nil, err
+		}
+	}
+	permissions, err := normalizeRequestedAuthPermissions(username, authPermissionsFromValue(body["permissions"]))
+	if err != nil {
+		return nil, err
+	}
+
+	authUsersMu.Lock()
+	defer authUsersMu.Unlock()
+
+	users, err := readAuthUsersUnlocked(cfg)
+	if err != nil {
+		return nil, err
+	}
+	for index, user := range users {
+		if user.Username != username {
+			continue
+		}
+		if password != "" {
+			users[index].PasswordHash = hashPassword(password)
+		}
+		users[index].Permissions = permissions
+		users[index].UpdatedAt = time.Now().Unix()
+		if err := writeAuthUsersUnlocked(cfg, users); err != nil {
+			return nil, err
+		}
+		return publicAuthUser(users[index]), nil
+	}
+	return nil, fmt.Errorf("user not found")
+}
+
+func updateAuthUserPassword(cfg Config, currentUsername string, body map[string]any) (map[string]any, error) {
+	if err := requireRootAuthUser(currentUsername); err != nil {
+		return nil, err
+	}
+
 	username := strings.TrimSpace(asString(body["username"]))
 	password := asString(body["password"])
 	if err := validateAuthUsername(username); err != nil {
@@ -142,6 +244,10 @@ func updateAuthUserPassword(cfg Config, body map[string]any) (map[string]any, er
 }
 
 func deleteAuthUser(cfg Config, currentUsername string, body map[string]any) (map[string]any, error) {
+	if err := requireRootAuthUser(currentUsername); err != nil {
+		return nil, err
+	}
+
 	username := strings.TrimSpace(asString(body["username"]))
 	if err := validateAuthUsername(username); err != nil {
 		return nil, err
@@ -201,6 +307,7 @@ func readAuthUsersUnlocked(cfg Config) ([]authUser, error) {
 	return []authUser{{
 		Username:     username,
 		PasswordHash: password,
+		Permissions:  storedAuthPermissions(username, []string{}),
 		CreatedAt:    now,
 		UpdatedAt:    now,
 	}}, nil
@@ -239,6 +346,7 @@ func normalizeAuthUsers(users []authUser) []authUser {
 		if user.Username == "" || user.PasswordHash == "" || seen[user.Username] {
 			continue
 		}
+		user.Permissions = storedAuthPermissions(user.Username, user.Permissions)
 		seen[user.Username] = true
 		next = append(next, user)
 	}
@@ -250,10 +358,96 @@ func normalizeAuthUsers(users []authUser) []authUser {
 
 func publicAuthUser(user authUser) map[string]any {
 	return map[string]any{
-		"username":  user.Username,
-		"createdAt": user.CreatedAt,
-		"updatedAt": user.UpdatedAt,
+		"username":       user.Username,
+		"permissions":    user.Permissions,
+		"canManageUsers": user.Username == rootAuthUsername,
+		"createdAt":      user.CreatedAt,
+		"updatedAt":      user.UpdatedAt,
 	}
+}
+
+func requireRootAuthUser(username string) error {
+	if username != rootAuthUsername {
+		return fmt.Errorf("only root can manage users")
+	}
+	return nil
+}
+
+func authPermissionsFromValue(value any) []string {
+	switch typed := value.(type) {
+	case []any:
+		permissions := make([]string, 0, len(typed))
+		for _, item := range typed {
+			permissions = append(permissions, asString(item))
+		}
+		return permissions
+	case []string:
+		return typed
+	case string:
+		return strings.FieldsFunc(typed, func(ch rune) bool {
+			return ch == ',' || ch == ' ' || ch == '\n' || ch == '\t'
+		})
+	default:
+		return []string{}
+	}
+}
+
+func normalizeRequestedAuthPermissions(username string, permissions []string) ([]string, error) {
+	return normalizeAuthPermissions(username, permissions, true)
+}
+
+func storedAuthPermissions(username string, permissions []string) []string {
+	next, _ := normalizeAuthPermissions(username, permissions, false)
+	return next
+}
+
+func normalizeAuthPermissions(username string, permissions []string, rejectUnknown bool) ([]string, error) {
+	if username == rootAuthUsername {
+		return allAuthPermissionIDs(), nil
+	}
+
+	selected := map[string]bool{}
+	for _, permission := range permissions {
+		permission = strings.TrimSpace(permission)
+		if permission == "" {
+			continue
+		}
+		if !isKnownAuthPermission(permission) {
+			if rejectUnknown {
+				return nil, fmt.Errorf("unsupported permission: %s", permission)
+			}
+			continue
+		}
+		selected[permission] = true
+	}
+	if len(selected) == 0 {
+		selected["node.read"] = true
+	}
+
+	ordered := make([]string, 0, len(selected))
+	for _, permission := range authPermissionCatalog {
+		if selected[permission.ID] {
+			ordered = append(ordered, permission.ID)
+		}
+	}
+	return ordered, nil
+}
+
+func allAuthPermissionIDs() []string {
+	permissions := make([]string, 0, len(authPermissionCatalog))
+	for _, permission := range authPermissionCatalog {
+		permissions = append(permissions, permission.ID)
+	}
+	return permissions
+}
+
+func isKnownAuthPermission(id string) bool {
+	for _, permission := range authPermissionCatalog {
+		if permission.ID == id {
+			return true
+		}
+	}
+	return false
 }
 
 func hashPassword(password string) string {

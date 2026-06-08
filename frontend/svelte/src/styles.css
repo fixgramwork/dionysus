@@ -313,6 +313,22 @@ meter {
   padding: 9px 10px;
 }
 
+.panel-title {
+  align-items: center;
+  background: #f6f8fb;
+  border-bottom: 1px solid #d8dee7;
+  display: flex;
+  gap: 10px;
+  justify-content: space-between;
+  padding: 8px 10px;
+}
+
+.panel-title h2 {
+  background: transparent;
+  border-bottom: 0;
+  padding: 0;
+}
+
 .facts {
   display: grid;
   margin: 0;
@@ -512,10 +528,88 @@ meter {
   padding: 0;
 }
 
+.model-actions {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.model-actions button {
+  justify-content: center;
+}
+
+.model-search {
+  align-items: end;
+  background: #fbfcfe;
+  border-bottom: 1px solid #d8dee7;
+  display: grid;
+  gap: 8px;
+  grid-template-columns: minmax(220px, 1fr) auto auto;
+  padding: 10px;
+}
+
+.model-search label {
+  color: #4b5563;
+  display: grid;
+  gap: 4px;
+  font-size: 12px;
+  font-weight: 700;
+  min-width: 0;
+  text-transform: uppercase;
+}
+
+.model-source {
+  color: #637083;
+  font-size: 12px;
+}
+
+.model-table td {
+  overflow-wrap: anywhere;
+}
+
+.model-name {
+  font-weight: 700;
+  min-width: 180px;
+}
+
+.model-name small,
+.model-table td small {
+  color: #637083;
+  display: block;
+  font-size: 12px;
+  font-weight: 500;
+  margin-top: 2px;
+}
+
+.model-notice {
+  margin: 10px;
+}
+
+.table-empty {
+  color: #637083;
+  text-align: center;
+}
+
 .user-form {
   display: grid;
   gap: 10px;
   padding: 10px;
+}
+
+.add-user-form {
+  background: #fbfcfe;
+  border-bottom: 1px solid #d8dee7;
+}
+
+.edit-user-form {
+  padding: 10px;
+}
+
+.user-form-grid {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
 .user-form label {
@@ -531,16 +625,63 @@ meter {
   margin-bottom: 0;
 }
 
+.user-notice {
+  margin: 10px;
+}
+
+.user-edit-row td {
+  background: #f8fafc;
+  padding: 0;
+}
+
 .user-row-actions {
   align-items: center;
-  display: grid;
+  display: flex;
+  flex-wrap: wrap;
   gap: 8px;
-  grid-template-columns: minmax(160px, 1fr) auto;
 }
 
 .user-row-actions button {
   justify-content: center;
   min-width: 70px;
+}
+
+.permission-field {
+  display: grid;
+  gap: 6px;
+}
+
+.permission-field > span {
+  color: #4b5563;
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.permission-grid {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.permission-grid label {
+  align-items: center;
+  background: #fff;
+  border: 1px solid #d8dee7;
+  border-radius: 4px;
+  color: #172033;
+  display: flex;
+  font-size: 13px;
+  font-weight: 500;
+  gap: 8px;
+  min-width: 0;
+  padding: 7px 8px;
+  text-transform: none;
+}
+
+.permission-grid input {
+  min-height: auto;
+  width: auto;
 }
 
 .ok {
@@ -714,6 +855,7 @@ meter {
   .grid.two,
   .status-strip,
   .form-grid,
+  .model-search,
   .gauge-layout,
   .metric-breakdown,
   .cli-form,
@@ -721,7 +863,9 @@ meter {
     grid-template-columns: 1fr;
   }
 
-  .user-row-actions {
+  .user-row-actions,
+  .user-form-grid,
+  .permission-grid {
     grid-template-columns: 1fr;
   }
 

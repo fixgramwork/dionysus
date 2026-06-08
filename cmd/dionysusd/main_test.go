@@ -35,9 +35,43 @@ func TestParsesOllamaPSPayload(t *testing.T) {
 	if asString(asMap(asSlice(parsed["models"])[0])["name"]) != "gemma3" {
 		t.Fatalf("model name mismatch: %#v", parsed["models"])
 	}
+	if !asBool(asMap(asSlice(parsed["models"])[0])["running"]) {
+		t.Fatalf("model should be marked running when it is listed by /api/ps: %#v", parsed["models"])
+	}
 	loaded := asMap(asSlice(parsed["loadedModels"])[0])
 	if asInt64(loaded["sizeVram"]) != 80 || asInt64(loaded["contextLength"]) != 4096 {
 		t.Fatalf("loaded model mismatch: %#v", loaded)
+	}
+}
+
+func TestParsesOllamaLibrarySearchHTML(t *testing.T) {
+	results := parseOllamaSearchHTML(`<a href="/library/llama3.2">Llama</a><a href="/library/qwen3">Qwen</a><a href="/library/llama3.2">Duplicate</a>`)
+	if len(results) != 2 {
+		t.Fatalf("search results should de-duplicate library links: %#v", results)
+	}
+	if asString(asMap(results[0])["pullName"]) != "llama3.2" || asString(asMap(results[1])["pullName"]) != "qwen3" {
+		t.Fatalf("search result names mismatch: %#v", results)
+	}
+}
+
+func TestValidatesOllamaModelInputs(t *testing.T) {
+	valid, err := cleanOllamaModelName("hf.co/example/model:Q4_K_M")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if valid != "hf.co/example/model:Q4_K_M" {
+		t.Fatalf("model name cleaned incorrectly: %s", valid)
+	}
+	for _, value := range []string{"", "llama 3", "../bad", "bad$"} {
+		if _, err := cleanOllamaModelName(value); err == nil {
+			t.Fatalf("invalid model should be rejected: %q", value)
+		}
+	}
+	if _, err := cleanOllamaKeepAlive("30m"); err != nil {
+		t.Fatalf("valid keepAlive should pass: %v", err)
+	}
+	if _, err := cleanOllamaKeepAlive("30 minutes"); err == nil {
+		t.Fatal("invalid keepAlive should be rejected")
 	}
 }
 
@@ -104,12 +138,20 @@ func TestManagesAuthUsers(t *testing.T) {
 	writeFile(t, cfg.AuthUserFile, "root\n")
 	writeFile(t, cfg.AuthPasswordFile, "dionysus\n")
 
-	user, err := createAuthUser(cfg, map[string]any{"username": "ops", "password": "secret123"})
+	user, err := createAuthUser(cfg, "root", map[string]any{
+		"username":    "ops",
+		"password":    "secret123",
+		"permissions": []any{"node.read", "console.run"},
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if asString(user["username"]) != "ops" {
 		t.Fatalf("created user mismatch: %#v", user)
+	}
+	permissions := asStringSliceForTest(user["permissions"])
+	if len(permissions) != 2 || permissions[0] != "node.read" || permissions[1] != "console.run" {
+		t.Fatalf("created permissions mismatch: %#v", user)
 	}
 	if !fileExists(cfg.AuthUsersFile) {
 		t.Fatal("users file should be created")
@@ -118,7 +160,7 @@ func TestManagesAuthUsers(t *testing.T) {
 	if _, err := loginTicket(cfg, map[string]any{"username": "ops", "password": "secret123"}); err != nil {
 		t.Fatalf("new user should login: %v", err)
 	}
-	if _, err := updateAuthUserPassword(cfg, map[string]any{"username": "ops", "password": "secret456"}); err != nil {
+	if _, err := updateAuthUserPassword(cfg, "root", map[string]any{"username": "ops", "password": "secret456"}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := loginTicket(cfg, map[string]any{"username": "ops", "password": "secret123"}); err == nil {
@@ -126,6 +168,23 @@ func TestManagesAuthUsers(t *testing.T) {
 	}
 	if _, err := loginTicket(cfg, map[string]any{"username": "ops", "password": "secret456"}); err != nil {
 		t.Fatalf("updated password should login: %v", err)
+	}
+	updated, err := updateAuthUser(cfg, "root", map[string]any{
+		"username":    "ops",
+		"permissions": []any{"node.read", "network.manage"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	permissions = asStringSliceForTest(updated["permissions"])
+	if len(permissions) != 2 || permissions[0] != "node.read" || permissions[1] != "network.manage" {
+		t.Fatalf("updated permissions mismatch: %#v", updated)
+	}
+	if _, err := updateAuthUser(cfg, "ops", map[string]any{"username": "ops", "permissions": []any{"node.read"}}); err == nil {
+		t.Fatal("non-root user should not update user information")
+	}
+	if _, err := createAuthUser(cfg, "ops", map[string]any{"username": "guest", "password": "secret789"}); err == nil {
+		t.Fatal("non-root user should not create users")
 	}
 
 	rootToken, _, err := issueJWT(cfg, "root", time.Now())
@@ -137,6 +196,9 @@ func TestManagesAuthUsers(t *testing.T) {
 	session, err := currentSession(cfg, request)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if !asBool(session["canManageUsers"]) {
+		t.Fatalf("root session should manage users: %#v", session)
 	}
 	if _, err := deleteAuthUser(cfg, asString(session["username"]), map[string]any{"username": "ops"}); err != nil {
 		t.Fatal(err)
@@ -162,6 +224,10 @@ func TestParsesProcMemoryAndOllamaProcesses(t *testing.T) {
 	writeFile(t, filepath.Join(root, "proc/123/comm"), "ollama\n")
 	writeFileBytes(t, filepath.Join(root, "proc/123/cmdline"), []byte("ollama\x00serve\x00"))
 	writeFile(t, filepath.Join(root, "proc/123/status"), "Name:\tollama\nVmRSS:\t100 kB\nVmHWM:\t120 kB\nVmSwap:\t30 kB\n")
+	mkdirAll(t, filepath.Join(root, "proc/124"))
+	writeFile(t, filepath.Join(root, "proc/124/comm"), "dionysusd\n")
+	writeFileBytes(t, filepath.Join(root, "proc/124/cmdline"), []byte("dionysusd\x00proxy\x00--ollama-api\x00http://127.0.0.1:11434\x00"))
+	writeFile(t, filepath.Join(root, "proc/124/status"), "Name:\tdionysusd\nVmRSS:\t200 kB\n")
 
 	cfg := testConfig(root)
 	status := nodeStatus(cfg)
@@ -459,6 +525,21 @@ func insertSampleForTest(t *testing.T, db string, sample map[string]any, retenti
 	)
 	if err := runSQLite(db, sql); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func asStringSliceForTest(value any) []string {
+	switch typed := value.(type) {
+	case []string:
+		return typed
+	case []any:
+		values := make([]string, 0, len(typed))
+		for _, item := range typed {
+			values = append(values, asString(item))
+		}
+		return values
+	default:
+		return []string{}
 	}
 }
 
