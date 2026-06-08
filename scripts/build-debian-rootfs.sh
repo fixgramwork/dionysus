@@ -198,6 +198,7 @@ Group=ollama
 Environment=HOME=/var/lib/ollama
 Environment=OLLAMA_HOST=127.0.0.1:11434
 Environment=OLLAMA_MODELS=/var/lib/ollama/models
+Environment=LD_LIBRARY_PATH=/lib/aarch64-linux-gnu:/usr/lib/aarch64-linux-gnu:/usr/lib/ollama
 ExecStart=/usr/bin/ollama serve
 Restart=on-failure
 RestartSec=2s

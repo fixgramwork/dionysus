@@ -145,8 +145,9 @@ The `--install-deps` path runs `apt-get update` and `apt-get install -y --no-ins
 The management UI first signs in through `/api2/json/access/ticket`, stores the returned JWT in the browser, and then connects directly to the host OS through `dionysusd`: `/proc`, `/sys`, and `/etc/os-release` populate the node OS panel, while the same status response reports the active web listener, static web root, metrics database, network config path, and JWT-auth state.
 `dionysus-metricsd` records Ollama RAM samples every 30 seconds in `/var/lib/dionysus/metrics/ollama.sqlite3` and keeps 7 days by default.
 `dionysus-llm-swap.service` creates and enables a dedicated swap file before `ollama.service`, `dionysus-pvedaemon.service`, and `dionysus-pveproxy.service`.
+`ollama.service` is enabled in the Debian rootfs so it starts automatically at OS boot, and the Local LLM web tab can start/stop the service, list downloaded and loaded models, unload a model, search the Ollama library, and pull a selected model.
 The web UI includes a KV-cache optimization panel that compares current kernel values against the built-in Ollama KV-cache profile, previews changes, applies them manually, and records operator-visible output in the web console.
-The web UI also includes a Users page for adding console accounts, rotating passwords, and deleting non-current users without editing files by hand.
+The web UI also includes a Users page where the root account can add console accounts, rotate passwords, delete non-current users, and assign per-user permissions without editing files by hand.
 `dionysusd` fails closed outside a Linux/systemd target OS by default. Local UI-only development must be explicit with `--dev-allow-host` or `DIONYSUS_DEV_ALLOW_HOST=1`.
 
 For a QEMU OS image where `apt` works inside the guest, build the Debian ARM64 rootfs:

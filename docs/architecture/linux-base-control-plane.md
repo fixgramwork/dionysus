@@ -70,7 +70,7 @@ initramfs는 `/proc`, `/sys`, 네트워크, 부트 상태를 확인하고 rescue
 
 - initramfs 경로: `/init` 이 `dionysus-agent bootstrap`, `dionysus-network start`, `dionysus-services banner` 를 실행합니다.
 - rootfs 경로: `dionysus-network.service`, `dionysus-pvedaemon.service`, `dionysus-pveproxy.service`, `dionysus-llm-swap.service` 를 systemd가 관리합니다.
-- 인증 경로: `/api2/json/access/ticket` 은 `/etc/dionysus/pve.users.json` 에 저장된 운영자에게 JWT를 발급하고, 나머지 `/api2/json` API는 `Authorization: Bearer <jwt>` 를 요구합니다. `/api2/json/access/users` 계열 API는 웹 UI의 Users 페이지에서 계정 추가, 비밀번호 변경, 삭제를 처리합니다.
+- 인증 경로: `/api2/json/access/ticket` 은 `/etc/dionysus/pve.users.json` 에 저장된 운영자에게 JWT를 발급하고, 나머지 `/api2/json` API는 `Authorization: Bearer <jwt>` 를 요구합니다. `/api2/json/access/users` 계열 변경 API는 root 계정만 사용할 수 있으며, 웹 UI의 Users 페이지에서 계정 추가, 비밀번호 변경, 삭제, 사용자별 권한 설정을 처리합니다.
 - OS 상태 연결 경로: `/api2/json/nodes/localhost/status` 는 `/proc`, `/sys`, `/etc/os-release` 에서 읽은 운영체제 정보와 현재 `dionysusd proxy` 의 웹 리스너, 정적 루트, metrics DB, network config, JWT-auth 상태를 함께 제공합니다.
 - 네트워크 변경 경로: `/api2/json/nodes/localhost/network/config` 는 LAN/Wi-Fi 설정을 저장하고, 명시적 apply 요청에서만 `dionysus-network.service` 재시작을 요청합니다.
 
@@ -119,6 +119,8 @@ QEMU virt machine -> Debian Linux kernel/initrd -> Debian ext4 rootfs -> systemd
 - Ollama API(`/api/ps`)로 현재 메모리에 올라간 모델 크기, VRAM 보고값, context length를 함께 관찰한다.
 - `dionysus-metricsd.service` 가 30초마다 SQLite에 RAM/Ollama 상태를 기록하고 기본 7일 보존한다.
 - `dionysus-llm-swap.service` 로 dedicated swap 파일을 먼저 켜고, Ollama가 RAM 부족 시 사용할 backing store를 확보한다.
+- `ollama.service` 는 systemd `multi-user.target` 에 enable되어 OS 부팅 시 자동으로 시작한다.
+- Proxmox-style `/api2/json/nodes/localhost/ollama/service`, `/models/run`, `/models/stop`, `/models/pull`, `/library/search` API로 웹에서 Ollama 서비스 시작/중지, 다운로드된 모델 실행/종료, 라이브러리 검색/설치를 수행한다.
 - Proxmox-style `/api2/json/nodes/localhost/ollama/optimize` API로 `vm.swappiness`, `vm.page-cluster`, `vm.vfs_cache_pressure`, `vm.watermark_scale_factor`, THP 정책을 조정한다.
 - `/api2/json/nodes/localhost/ollama/kv-cache/profile` 과 UI의 KV-cache Optimization 패널은 현재 커널 값을 목표 프로필과 비교하고, preview/apply 결과를 웹 콘솔에 남긴다.
 - UI/API는 "무조건 빠른 swap"처럼 표현하지 않고, KV-cache overflow와 모델 page cache 보존을 위한 운영 프로필로 설명한다.

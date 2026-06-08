@@ -5,17 +5,24 @@
     AlertTriangle,
     Cpu,
     Database,
+    Download,
     KeyRound,
     LogIn,
     LogOut,
+    Pencil,
     Play,
     RefreshCw,
     Save,
+    Search,
     Server,
     Settings,
+    Shield,
+    Square,
     Trash2,
     User,
+    UserPlus,
     Wifi,
+    X,
     Zap
   } from '@lucide/svelte';
   import { api, clearToken, login, postJSON, readToken } from './api.js';
@@ -48,16 +55,35 @@
   let previousNetworkSample = null;
   let ollama = null;
   let history = [];
+  let ollamaActionLoading = '';
+  let modelSearchQuery = 'llama';
+  let modelSearchResults = [];
+  let modelSearchSource = '';
+  let modelSearchWarning = '';
+  let modelSearchLoading = false;
+  let modelPulling = '';
+  let modelRunning = '';
+  let modelStopping = '';
   let consoleLines = [];
   let consoleCommand = 'uname -a';
   let consoleCwd = '/';
   let consoleRunning = false;
   let terminalEntries = [];
   let users = [];
+  let permissionOptions = [
+    { id: 'node.read', label: 'Node status', description: 'Read node status, metrics, and inventory' },
+    { id: 'network.manage', label: 'Network', description: 'Preview, save, and apply network settings' },
+    { id: 'llm.manage', label: 'Local LLM', description: 'Read and apply local LLM runtime tuning' },
+    { id: 'services.manage', label: 'Services', description: 'Read service state and perform service operations' },
+    { id: 'console.run', label: 'Console', description: 'Run commands through the web console' }
+  ];
   let userLoading = false;
   let userError = '';
-  let newUser = { username: '', password: '', confirm: '' };
-  let passwordDrafts = {};
+  const defaultUserPermissions = ['node.read'];
+  let showAddUser = false;
+  let newUser = { username: '', password: '', confirm: '', permissions: [...defaultUserPermissions] };
+  let editingUsername = '';
+  let userEditDraft = { username: '', password: '', confirm: '', permissions: [...defaultUserPermissions] };
 
   function clone(value) {
     return JSON.parse(JSON.stringify(value || {}));
@@ -80,6 +106,14 @@
     previousNetworkSample = null;
     ollama = null;
     history = [];
+    ollamaActionLoading = '';
+    modelSearchResults = [];
+    modelSearchSource = '';
+    modelSearchWarning = '';
+    modelSearchLoading = false;
+    modelPulling = '';
+    modelRunning = '';
+    modelStopping = '';
     savedAt = '';
   }
 
@@ -138,15 +172,17 @@
         api('/api2/json/nodes/localhost/ollama/status'),
         api('/api2/json/nodes/localhost/ollama/history?limit=120')
       ]);
-      const [nextSession, nextUsers] = await Promise.all([
+      const [nextSession, nextUsers, nextPermissions] = await Promise.all([
         api('/api2/json/access/session'),
-        api('/api2/json/access/users')
+        api('/api2/json/access/users'),
+        api('/api2/json/access/permissions')
       ]);
       version = nextVersion;
       session = nextSession;
       status = nextStatus;
       services = nextServices || [];
       users = nextUsers || [];
+      permissionOptions = nextPermissions || permissionOptions;
       network = withNetworkRates(nextNetwork);
       networkDraft = clone(nextNetwork?.config);
       ollama = nextOllama;
@@ -256,6 +292,103 @@
     }
   }
 
+  async function refreshOllamaState() {
+    const [nextOllama, nextHistory] = await Promise.all([
+      api('/api2/json/nodes/localhost/ollama/status'),
+      api('/api2/json/nodes/localhost/ollama/history?limit=120')
+    ]);
+    ollama = nextOllama;
+    history = nextHistory || [];
+    savedAt = new Date().toLocaleTimeString();
+  }
+
+  async function controlOllamaService(action) {
+    if (ollamaActionLoading) return;
+    ollamaActionLoading = action;
+    try {
+      const result = await postJSON('/api2/json/nodes/localhost/ollama/service', { action });
+      pushConsole(result.status === 'failed' ? 'error' : 'info', `ollama.service ${result.status}`);
+      await refreshOllamaState();
+    } catch (err) {
+      handleAPIError(err);
+    } finally {
+      ollamaActionLoading = '';
+    }
+  }
+
+  async function searchOllamaModels() {
+    if (modelSearchLoading) return;
+    modelSearchLoading = true;
+    modelSearchWarning = '';
+    try {
+      const result = await api(`/api2/json/nodes/localhost/ollama/library/search?q=${encodeURIComponent(modelSearchQuery.trim())}`);
+      modelSearchResults = result.results || [];
+      modelSearchSource = result.source || '';
+      modelSearchWarning = result.warning || '';
+      pushConsole('info', `ollama model search results=${modelSearchResults.length} source=${modelSearchSource || 'unknown'}`);
+    } catch (err) {
+      modelSearchResults = [];
+      modelSearchWarning = err.message;
+      handleAPIError(err);
+    } finally {
+      modelSearchLoading = false;
+    }
+  }
+
+  async function pullOllamaModel(model) {
+    const name = String(model || '').trim();
+    if (!name || modelPulling) return;
+    modelPulling = name;
+    try {
+      const result = await postJSON('/api2/json/nodes/localhost/ollama/models/pull', { model: name });
+      pushConsole('info', `ollama pull ${result.model}: ${result.status}`);
+      if (result.ollama) {
+        ollama = result.ollama;
+      }
+      await refreshOllamaState();
+    } catch (err) {
+      handleAPIError(err);
+    } finally {
+      modelPulling = '';
+    }
+  }
+
+  async function runOllamaModel(model) {
+    const name = String(model || '').trim();
+    if (!name || modelRunning) return;
+    modelRunning = name;
+    try {
+      const result = await postJSON('/api2/json/nodes/localhost/ollama/models/run', { model: name, keepAlive: '30m' });
+      pushConsole('info', `ollama run requested: ${result.model}`);
+      if (result.ollama) {
+        ollama = result.ollama;
+      }
+      await refreshOllamaState();
+    } catch (err) {
+      handleAPIError(err);
+    } finally {
+      modelRunning = '';
+    }
+  }
+
+  async function stopOllamaModel(model) {
+    const name = String(model || '').trim();
+    if (!name || modelStopping) return;
+    modelStopping = name;
+    try {
+      const result = await postJSON('/api2/json/nodes/localhost/ollama/models/stop', { model: name });
+      pushConsole('warn', `ollama stop requested: ${result.model}`);
+      if (result.ollama) {
+        ollama = result.ollama;
+      }
+      await refreshOllamaState();
+    } catch (err) {
+      handleAPIError(err);
+    } finally {
+      modelStopping = '';
+    }
+  }
+
   async function runConsoleCommand() {
     const command = consoleCommand.trim();
     if (!command || consoleRunning) return;
@@ -292,12 +425,14 @@
 
   async function refreshUsers() {
     try {
-      const [nextSession, nextUsers] = await Promise.all([
+      const [nextSession, nextUsers, nextPermissions] = await Promise.all([
         api('/api2/json/access/session'),
-        api('/api2/json/access/users')
+        api('/api2/json/access/users'),
+        api('/api2/json/access/permissions')
       ]);
       session = nextSession;
       users = nextUsers || [];
+      permissionOptions = nextPermissions || permissionOptions;
       userError = '';
     } catch (err) {
       userError = err.message;
@@ -305,8 +440,90 @@
     }
   }
 
+  function resetNewUser() {
+    newUser = { username: '', password: '', confirm: '', permissions: [...defaultUserPermissions] };
+  }
+
+  function toggleAddUserForm() {
+    userError = '';
+    if (!canManageUsers) {
+      showAddUser = false;
+      userError = '권한 부족: root 계정만 사용자를 추가할 수 있습니다.';
+      return;
+    }
+    if (!showAddUser) {
+      resetNewUser();
+    }
+    showAddUser = !showAddUser;
+  }
+
+  function permissionLabel(id) {
+    return permissionOptions.find((permission) => permission.id === id)?.label || id;
+  }
+
+  function orderedPermissionIDs(selected) {
+    const next = permissionOptions
+      .filter((permission) => selected.has(permission.id))
+      .map((permission) => permission.id);
+    return next.length > 0 ? next : [...defaultUserPermissions];
+  }
+
+  function permissionList(value) {
+    const selected = new Set(Array.isArray(value) ? value : []);
+    return orderedPermissionIDs(selected);
+  }
+
+  function permissionSummary(value) {
+    return permissionList(value).map(permissionLabel).join(', ');
+  }
+
+  function setNewUserPermission(id, checked) {
+    const selected = new Set(newUser.permissions || []);
+    if (checked) {
+      selected.add(id);
+    } else {
+      selected.delete(id);
+    }
+    newUser = { ...newUser, permissions: orderedPermissionIDs(selected) };
+  }
+
+  function beginEditUser(user) {
+    userError = '';
+    if (!canManageUsers) {
+      editingUsername = '';
+      userError = '권한 부족: root 계정만 사용자 비밀번호와 권한을 수정할 수 있습니다.';
+      return;
+    }
+    editingUsername = user.username;
+    userEditDraft = {
+      username: user.username,
+      password: '',
+      confirm: '',
+      permissions: permissionList(user.permissions)
+    };
+  }
+
+  function cancelEditUser() {
+    editingUsername = '';
+    userEditDraft = { username: '', password: '', confirm: '', permissions: [...defaultUserPermissions] };
+  }
+
+  function setEditUserPermission(id, checked) {
+    const selected = new Set(userEditDraft.permissions || []);
+    if (checked) {
+      selected.add(id);
+    } else {
+      selected.delete(id);
+    }
+    userEditDraft = { ...userEditDraft, permissions: orderedPermissionIDs(selected) };
+  }
+
   async function createUser() {
     userError = '';
+    if (!canManageUsers) {
+      userError = 'only root can manage users';
+      return;
+    }
     const username = newUser.username.trim();
     if (newUser.password !== newUser.confirm) {
       userError = 'password confirmation does not match';
@@ -316,9 +533,11 @@
     try {
       const created = await postJSON('/api2/json/access/users', {
         username,
-        password: newUser.password
+        password: newUser.password,
+        permissions: newUser.permissions
       });
-      newUser = { username: '', password: '', confirm: '' };
+      resetNewUser();
+      showAddUser = false;
       pushConsole('info', `user created: ${created.username}`);
       await refreshUsers();
     } catch (err) {
@@ -329,18 +548,36 @@
     }
   }
 
-  function setPasswordDraft(username, value) {
-    passwordDrafts = { ...passwordDrafts, [username]: value };
-  }
-
-  async function updateUserPassword(username) {
-    const password = passwordDrafts[username] || '';
+  async function updateUser() {
     userError = '';
+    if (!canManageUsers) {
+      userError = 'only root can manage users';
+      return;
+    }
+    if (!userEditDraft.username) return;
+    const password = userEditDraft.password;
+    if (password || userEditDraft.confirm) {
+      if (password !== userEditDraft.confirm) {
+        userError = 'password confirmation does not match';
+        return;
+      }
+      if (password.length < 8) {
+        userError = 'password must be at least 8 characters';
+        return;
+      }
+    }
     userLoading = true;
     try {
-      await postJSON('/api2/json/access/users/password', { username, password });
-      passwordDrafts = { ...passwordDrafts, [username]: '' };
-      pushConsole('info', `password updated: ${username}`);
+      const body = {
+        username: userEditDraft.username,
+        permissions: userEditDraft.permissions
+      };
+      if (password) {
+        body.password = password;
+      }
+      await postJSON('/api2/json/access/users/update', body);
+      pushConsole('info', `user updated: ${userEditDraft.username}`);
+      cancelEditUser();
       await refreshUsers();
     } catch (err) {
       userError = err.message;
@@ -353,6 +590,10 @@
   async function deleteUser(username) {
     if (!window.confirm(`Delete user ${username}?`)) return;
     userError = '';
+    if (!canManageUsers) {
+      userError = 'only root can manage users';
+      return;
+    }
     userLoading = true;
     try {
       await postJSON('/api2/json/access/users/delete', { username });
@@ -419,6 +660,41 @@
     return new Date(timestamp * 1000).toLocaleString();
   }
 
+  function formatAPIDate(value) {
+    if (!value) return '-';
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return value;
+    return date.toLocaleString();
+  }
+
+  function modelNameAliases(value) {
+    const normalized = String(value || '').trim().toLowerCase();
+    if (!normalized) return [];
+    const aliases = [normalized];
+    if (normalized.endsWith(':latest')) {
+      aliases.push(normalized.slice(0, -7));
+    } else if (!normalized.includes(':')) {
+      aliases.push(`${normalized}:latest`);
+    }
+    return aliases;
+  }
+
+  function modelNameInSet(value, set) {
+    return modelNameAliases(value).some((name) => set.has(name));
+  }
+
+  function loadedModelFor(value) {
+    const aliases = new Set(modelNameAliases(value));
+    return loadedModels.find((model) =>
+      [...modelNameAliases(model.model), ...modelNameAliases(model.name)].some((name) => aliases.has(name))
+    );
+  }
+
+  function modelDetailsSummary(model) {
+    const details = model?.details || {};
+    return [details.family, details.parameterSize, details.quantizationLevel].filter(Boolean).join(' / ') || '-';
+  }
+
   function stateClass(state) {
     if (state === 'active' || state === 'ready' || state === 'api-online' || state === 'restarted') return 'ok';
     if (state === 'failed' || state === 'missing') return 'bad';
@@ -431,12 +707,17 @@
   $: os = status?.os || {};
   $: controlPlane = status?.controlPlane || {};
   $: kv = ollama?.kvCache || {};
+  $: downloadedModels = ollama?.models || [];
+  $: loadedModels = ollama?.loadedModels || [];
+  $: loadedModelNameSet = new Set(loadedModels.flatMap((model) => [...modelNameAliases(model.model), ...modelNameAliases(model.name)]));
+  $: installedModelNameSet = new Set(downloadedModels.flatMap((model) => modelNameAliases(model.name)));
   $: cpuReady = cpu.state === 'ready' || hasFiniteNumber(cpu.usedPercent);
   $: cpuUsedPercent = clampPercent(cpu.usedPercent);
   $: cpuGaugePercent = visibleGaugePercent(cpu.usedPercent, cpuReady);
   $: cpuUsageText = cpuReady ? formatPercent(cpu.usedPercent) : '-';
   $: memoryUsedPercent = ratioPercent(memory.used, memory.total);
   $: swapUsedPercent = ratioPercent(swap.used, swap.total);
+  $: canManageUsers = !!session?.canManageUsers || session?.username === 'root';
 
   onMount(() => {
     if (authenticated) {
@@ -724,9 +1005,26 @@
       {:else if activeTab === 'llm'}
         <section class="grid two">
           <article class="panel">
-            <h2>Ollama</h2>
+            <div class="panel-title">
+              <h2>Ollama</h2>
+              <div class="model-actions">
+                <button on:click={() => controlOllamaService('start')} disabled={!!ollamaActionLoading} title="Start Ollama">
+                  <Play size={15} />
+                  Start
+                </button>
+                <button on:click={() => controlOllamaService('restart')} disabled={!!ollamaActionLoading} title="Restart Ollama">
+                  <RefreshCw size={15} class={ollamaActionLoading === 'restart' ? 'spin' : ''} />
+                  Restart
+                </button>
+                <button on:click={() => controlOllamaService('stop')} disabled={!!ollamaActionLoading} title="Stop Ollama">
+                  <Square size={15} />
+                  Stop
+                </button>
+              </div>
+            </div>
             <dl class="facts">
               <div><dt>State</dt><dd><span class={stateClass(ollama?.platform?.state)}>{ollama?.platform?.state || 'not-detected'}</span></dd></div>
+              <div><dt>Service</dt><dd><span class={stateClass(ollama?.service?.state)}>{ollama?.service?.state || 'unknown'}</span></dd></div>
               <div><dt>API</dt><dd>{ollama?.apiBase || '-'}</dd></div>
               <div><dt>Version</dt><dd>{ollama?.version || '-'}</dd></div>
               <div><dt>Models</dt><dd>{ollama?.platform?.modelCount || 0} local / {ollama?.platform?.loadedModelCount || 0} loaded</dd></div>
@@ -745,6 +1043,114 @@
               <button on:click={() => optimizeKV(true)}><Zap size={15} />Preview</button>
               <button class="primary" on:click={() => optimizeKV(false)}><Zap size={15} />Apply</button>
             </div>
+          </article>
+
+          <article class="panel wide">
+            <div class="panel-title">
+              <h2>Downloaded Models</h2>
+              <button on:click={refreshOllamaState} disabled={loading || liveLoading} title="Refresh Ollama state">
+                <RefreshCw size={15} />
+                Refresh
+              </button>
+            </div>
+            <table class="model-table">
+              <thead><tr><th>Model</th><th>Runtime</th><th>Size</th><th>Details</th><th>Modified</th><th>Actions</th></tr></thead>
+              <tbody>
+                {#if downloadedModels.length === 0}
+                  <tr><td class="table-empty" colspan="6">No downloaded models</td></tr>
+                {:else}
+                  {#each downloadedModels as model (model.name)}
+                    <tr>
+                      <td class="model-name">{model.name}</td>
+                      <td>
+                        <span class={stateClass(model.running || modelNameInSet(model.name, loadedModelNameSet) ? 'active' : 'inactive')}>
+                          {model.running || modelNameInSet(model.name, loadedModelNameSet) ? 'loaded' : 'stopped'}
+                        </span>
+                        {#if loadedModelFor(model.name)?.expiresAt}
+                          <small>until {formatAPIDate(loadedModelFor(model.name).expiresAt)}</small>
+                        {/if}
+                      </td>
+                      <td>{formatBytes(model.size)}</td>
+                      <td>{modelDetailsSummary(model)}</td>
+                      <td>{formatAPIDate(model.modifiedAt)}</td>
+                      <td>
+                        <div class="model-actions">
+                          <button on:click={() => runOllamaModel(model.name)} disabled={!ollama?.apiReachable || !!modelRunning || !!modelPulling} title="Load model">
+                            <Play size={15} />
+                            Run
+                          </button>
+                          <button on:click={() => stopOllamaModel(model.name)} disabled={!ollama?.apiReachable || !modelNameInSet(model.name, loadedModelNameSet) || !!modelStopping} title="Unload model">
+                            <Square size={15} />
+                            Stop
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  {/each}
+                {/if}
+              </tbody>
+            </table>
+          </article>
+
+          <article class="panel wide">
+            <div class="panel-title">
+              <h2>Install Models</h2>
+              <span class="model-source">{modelSearchSource || 'local catalog'}</span>
+            </div>
+            <form class="model-search" on:submit|preventDefault={searchOllamaModels}>
+              <label>
+                <span>Search</span>
+                <input bind:value={modelSearchQuery} placeholder="llama3.2, qwen3, nomic-embed-text" />
+              </label>
+              <button class="primary" type="submit" disabled={modelSearchLoading}>
+                <Search size={15} class={modelSearchLoading ? 'spin' : ''} />
+                Search
+              </button>
+              <button type="button" on:click={() => pullOllamaModel(modelSearchQuery)} disabled={!ollama?.apiReachable || !modelSearchQuery.trim() || !!modelPulling}>
+                <Download size={15} />
+                Download
+              </button>
+            </form>
+            {#if modelSearchWarning}
+              <div class="notice model-notice">
+                <AlertTriangle size={16} />
+                <span>{modelSearchWarning}</span>
+              </div>
+            {/if}
+            <table class="model-table">
+              <thead><tr><th>Model</th><th>Source</th><th>Local state</th><th>Actions</th></tr></thead>
+              <tbody>
+                {#if modelSearchResults.length === 0}
+                  <tr><td class="table-empty" colspan="4">No search results</td></tr>
+                {:else}
+                  {#each modelSearchResults as result (result.pullName || result.name)}
+                    <tr>
+                      <td class="model-name">
+                        {result.title || result.name}
+                        <small>{result.description || result.pullName || result.name}</small>
+                      </td>
+                      <td>{result.source || '-'}</td>
+                      <td>
+                        {#if modelNameInSet(result.pullName || result.name, installedModelNameSet)}
+                          <span class="ok">downloaded</span>
+                        {:else}
+                          <span class="warn">not installed</span>
+                        {/if}
+                        {#if modelNameInSet(result.pullName || result.name, loadedModelNameSet)}
+                          <small>loaded</small>
+                        {/if}
+                      </td>
+                      <td>
+                        <button on:click={() => pullOllamaModel(result.pullName || result.name)} disabled={!ollama?.apiReachable || !!modelPulling} title="Download model">
+                          <Download size={15} />
+                          {modelPulling === (result.pullName || result.name) ? 'Downloading' : 'Download'}
+                        </button>
+                      </td>
+                    </tr>
+                  {/each}
+                {/if}
+              </tbody>
+            </table>
           </article>
 
           <article class="panel wide">
@@ -785,67 +1191,139 @@
         </section>
       {:else if activeTab === 'users'}
         <section class="grid two">
-          <article class="panel">
-            <h2>Add User</h2>
-            <form class="user-form" on:submit|preventDefault={createUser}>
-              <label>
-                <span>Username</span>
-                <input bind:value={newUser.username} autocomplete="off" spellcheck="false" />
-              </label>
-              <label>
-                <span>Password</span>
-                <input type="password" bind:value={newUser.password} autocomplete="new-password" />
-              </label>
-              <label>
-                <span>Confirm</span>
-                <input type="password" bind:value={newUser.confirm} autocomplete="new-password" />
-              </label>
-              {#if userError}
-                <div class="notice user-error">
-                  <AlertTriangle size={16} />
-                  <span>{userError}</span>
-                </div>
-              {/if}
-              <div class="button-row compact">
-                <button class="primary" type="submit" disabled={userLoading || !newUser.username.trim() || newUser.password.length < 8 || newUser.confirm.length < 8}>
-                  <User size={15} />
-                  Add User
-                </button>
-              </div>
-            </form>
-          </article>
-
           <article class="panel wide">
-            <h2>User Accounts</h2>
+            <div class="panel-title">
+              <h2>User Accounts</h2>
+              <button class="primary" on:click={toggleAddUserForm} disabled={userLoading}>
+                {#if showAddUser}
+                  <X size={15} />
+                  Close
+                {:else}
+                  <UserPlus size={15} />
+                  Add User
+                {/if}
+              </button>
+            </div>
+            {#if !canManageUsers}
+              <div class="notice user-notice">
+                <Shield size={16} />
+                <span>Only root can add users, edit user information, or change permissions.</span>
+              </div>
+            {/if}
+            {#if userError}
+              <div class="notice user-notice">
+                <AlertTriangle size={16} />
+                <span>{userError}</span>
+              </div>
+            {/if}
+            {#if showAddUser && canManageUsers}
+              <form class="user-form add-user-form" on:submit|preventDefault={createUser}>
+                <div class="user-form-grid">
+                  <label>
+                    <span>Username</span>
+                    <input bind:value={newUser.username} autocomplete="off" spellcheck="false" />
+                  </label>
+                  <label>
+                    <span>Password</span>
+                    <input type="password" bind:value={newUser.password} autocomplete="new-password" />
+                  </label>
+                  <label>
+                    <span>Confirm</span>
+                    <input type="password" bind:value={newUser.confirm} autocomplete="new-password" />
+                  </label>
+                </div>
+                <div class="permission-field">
+                  <span>Permissions</span>
+                  <div class="permission-grid">
+                    {#each permissionOptions as permission}
+                      <label title={permission.description}>
+                        <input
+                          type="checkbox"
+                          checked={(newUser.permissions || []).includes(permission.id)}
+                          on:change={(event) => setNewUserPermission(permission.id, event.currentTarget.checked)}
+                        />
+                        <span>{permission.label}</span>
+                      </label>
+                    {/each}
+                  </div>
+                </div>
+                <div class="button-row compact">
+                  <button class="primary" type="submit" disabled={userLoading || !newUser.username.trim() || newUser.password.length < 8 || newUser.confirm.length < 8}>
+                    <UserPlus size={15} />
+                    Create
+                  </button>
+                </div>
+              </form>
+            {/if}
             <table>
-              <thead><tr><th>Username</th><th>Created</th><th>Updated</th><th>Password</th><th>Delete</th></tr></thead>
+              <thead><tr><th>Username</th><th>Permissions</th><th>Created</th><th>Updated</th><th>Actions</th></tr></thead>
               <tbody>
-                {#each users as user}
+                {#each users as user (user.username)}
                   <tr>
                     <td>{user.username}</td>
+                    <td>{permissionSummary(user.permissions)}</td>
                     <td>{formatDate(user.createdAt)}</td>
                     <td>{formatDate(user.updatedAt)}</td>
                     <td>
                       <div class="user-row-actions">
-                        <input
-                          type="password"
-                          autocomplete="new-password"
-                          placeholder="New password"
-                          value={passwordDrafts[user.username] || ''}
-                          on:input={(event) => setPasswordDraft(user.username, event.currentTarget.value)}
-                        />
-                        <button on:click={() => updateUserPassword(user.username)} disabled={userLoading || (passwordDrafts[user.username] || '').length < 8}>
-                          <Save size={15} />
-                          Set
+                        <button on:click={() => beginEditUser(user)} disabled={userLoading}>
+                          <Pencil size={15} />
+                          Edit
+                        </button>
+                        <button on:click={() => deleteUser(user.username)} disabled={!canManageUsers || userLoading || user.username === session?.username || users.length <= 1} title="Delete user">
+                          <Trash2 size={15} />
                         </button>
                       </div>
                     </td>
-                    <td>
-                      <button on:click={() => deleteUser(user.username)} disabled={userLoading || user.username === session?.username || users.length <= 1} title="Delete user">
-                        <Trash2 size={15} />
-                      </button>
-                    </td>
                   </tr>
+                  {#if editingUsername === user.username}
+                    <tr class="user-edit-row">
+                      <td colspan="5">
+                        <form class="user-form edit-user-form" on:submit|preventDefault={updateUser}>
+                          <div class="user-form-grid">
+                            <label>
+                              <span>Username</span>
+                              <input value={userEditDraft.username} disabled />
+                            </label>
+                            <label>
+                              <span>New password</span>
+                              <input type="password" bind:value={userEditDraft.password} autocomplete="new-password" placeholder="Leave blank to keep current password" />
+                            </label>
+                            <label>
+                              <span>Confirm</span>
+                              <input type="password" bind:value={userEditDraft.confirm} autocomplete="new-password" />
+                            </label>
+                          </div>
+                          <div class="permission-field">
+                            <span>Permissions</span>
+                            <div class="permission-grid">
+                              {#each permissionOptions as permission}
+                                <label title={userEditDraft.username === 'root' ? 'Root always has every permission' : permission.description}>
+                                  <input
+                                    type="checkbox"
+                                    checked={(userEditDraft.permissions || []).includes(permission.id)}
+                                    disabled={userEditDraft.username === 'root'}
+                                    on:change={(event) => setEditUserPermission(permission.id, event.currentTarget.checked)}
+                                  />
+                                  <span>{permission.label}</span>
+                                </label>
+                              {/each}
+                            </div>
+                          </div>
+                          <div class="button-row compact">
+                            <button class="primary" type="submit" disabled={userLoading || (!!userEditDraft.password && (userEditDraft.password.length < 8 || userEditDraft.password !== userEditDraft.confirm))}>
+                              <Save size={15} />
+                              Save
+                            </button>
+                            <button type="button" on:click={cancelEditUser} disabled={userLoading}>
+                              <X size={15} />
+                              Cancel
+                            </button>
+                          </div>
+                        </form>
+                      </td>
+                    </tr>
+                  {/if}
                 {/each}
               </tbody>
             </table>
