@@ -6,7 +6,7 @@ STATUS="sh scripts/status.sh"
 ACTION="${1:-}"
 
 if [ -z "$ACTION" ]; then
-    $STATUS error "Usage: sh scripts/run-linux-builder.sh <build-kernel|fetch-busybox> [...]"
+    $STATUS error "Usage: sh scripts/run-linux-builder.sh <build-kernel|fetch-busybox|build-debian-rootfs> [...]"
     exit 1
 fi
 
@@ -17,6 +17,8 @@ REPO_ROOT="$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)"
 DOCKERFILE_PATH="$SCRIPT_DIR/docker/linux-builder.Dockerfile"
 IMAGE_NAME="${DIONYSUS_LINUX_BUILDER_IMAGE:-dionysus/linux-builder:bookworm-amd64}"
 TARGET_PLATFORM="${DIONYSUS_LINUX_BUILDER_PLATFORM:-linux/amd64}"
+DEBIAN_IMAGE_NAME="${DIONYSUS_DEBIAN_BUILDER_IMAGE:-dionysus/linux-builder:bookworm-arm64-rootfs}"
+DEBIAN_TARGET_PLATFORM="${DIONYSUS_DEBIAN_BUILDER_PLATFORM:-linux/arm64}"
 CONTAINER_ENGINE="${CONTAINER_ENGINE:-}"
 
 abspath() {
@@ -54,12 +56,15 @@ detect_engine() {
 build_image() {
     engine="$1"
 
-    if "$engine" image inspect "$IMAGE_NAME" >/dev/null 2>&1; then
+    image_name="${2:-$IMAGE_NAME}"
+    target_platform="${3:-$TARGET_PLATFORM}"
+
+    if "$engine" image inspect "$image_name" >/dev/null 2>&1; then
         return 0
     fi
 
-    $STATUS info "Building Linux builder image $IMAGE_NAME"
-    "$engine" build --platform "$TARGET_PLATFORM" -t "$IMAGE_NAME" -f "$DOCKERFILE_PATH" "$SCRIPT_DIR/docker"
+    $STATUS info "Building Linux builder image $image_name"
+    "$engine" build --platform "$target_platform" -t "$image_name" -f "$DOCKERFILE_PATH" "$SCRIPT_DIR/docker"
 }
 
 run_build_kernel() {
@@ -116,11 +121,35 @@ run_fetch_busybox() {
         sh -c "cp /bin/busybox /out/$target_name"
 }
 
+run_build_debian_rootfs() {
+    engine="$1"
+    shift
+
+    user_flag=""
+
+    $STATUS info "Building Debian rootfs inside $engine on $DEBIAN_TARGET_PLATFORM"
+    # shellcheck disable=SC2086
+    exec "$engine" run --rm --platform "$DEBIAN_TARGET_PLATFORM" $user_flag \
+        -e DIONYSUS_IN_LINUX_BUILDER=1 \
+        -e DEBIAN_ARCH="${DEBIAN_ARCH:-arm64}" \
+        -e DEBIAN_SUITE="${DEBIAN_SUITE:-bookworm}" \
+        -e DEBIAN_MIRROR="${DEBIAN_MIRROR:-https://deb.debian.org/debian}" \
+        -e DEBIAN_SECURITY_MIRROR="${DEBIAN_SECURITY_MIRROR:-https://security.debian.org/debian-security}" \
+        -e DEBIAN_ROOTFS_SIZE="${DEBIAN_ROOTFS_SIZE:-8G}" \
+        -e DEBIAN_ROOT_PASSWORD="${DEBIAN_ROOT_PASSWORD:-dionysus}" \
+        -e DIONYSUS_DEBIAN_INCLUDE_OLLAMA="${DIONYSUS_DEBIAN_INCLUDE_OLLAMA:-1}" \
+        -e DIONYSUS_DEBIAN_LLM_SWAP_SIZE_MB="${DIONYSUS_DEBIAN_LLM_SWAP_SIZE_MB:-1024}" \
+        -v "$REPO_ROOT":/workspace \
+        -w /workspace \
+        "$DEBIAN_IMAGE_NAME" \
+        sh scripts/build-debian-rootfs.sh "$@"
+}
+
 engine="$(detect_engine)"
-build_image "$engine"
 
 case "$ACTION" in
     build-kernel)
+        build_image "$engine" "$IMAGE_NAME" "$TARGET_PLATFORM"
         if [ "$#" -ne 3 ]; then
             $STATUS error "build-kernel requires: <linux-dir> <build-dir> <fragment>"
             exit 1
@@ -128,11 +157,16 @@ case "$ACTION" in
         run_build_kernel "$engine" "$@"
         ;;
     fetch-busybox)
+        build_image "$engine" "$IMAGE_NAME" "$TARGET_PLATFORM"
         if [ "$#" -ne 1 ]; then
             $STATUS error "fetch-busybox requires: <target-path>"
             exit 1
         fi
         run_fetch_busybox "$engine" "$1"
+        ;;
+    build-debian-rootfs)
+        build_image "$engine" "$DEBIAN_IMAGE_NAME" "$DEBIAN_TARGET_PLATFORM"
+        run_build_debian_rootfs "$engine" "$@"
         ;;
     *)
         $STATUS error "Unsupported Linux builder action: $ACTION"

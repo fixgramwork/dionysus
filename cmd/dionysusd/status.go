@@ -2,6 +2,7 @@ package main
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 )
@@ -28,11 +29,12 @@ func nodeStatus(cfg Config) map[string]any {
 		"uptime":       readUptime(cfg.ProcRoot),
 		"loadavg":      readLoadavg(cfg.ProcRoot),
 		"memory": map[string]any{
-			"total":     total,
-			"free":      free,
-			"available": available,
-			"cached":    cached,
-			"used":      positive(total - available),
+			"total":       total,
+			"free":        free,
+			"available":   available,
+			"cached":      cached,
+			"used":        positive(total - available),
+			"freeCommand": freeCommandStatus(),
 		},
 		"swap": map[string]any{
 			"total":       swapTotal,
@@ -43,6 +45,21 @@ func nodeStatus(cfg Config) map[string]any {
 		},
 		"localtime": now(),
 	}
+}
+
+func freeCommandStatus() map[string]any {
+	cmd := exec.Command("/bin/sh", "-lc", "free -h")
+	cmd.Env = append(os.Environ(), "PATH="+os.Getenv("PATH")+":/bin:/sbin:/usr/bin:/usr/sbin")
+	output, err := cmd.Output()
+	status := map[string]any{
+		"command": "free -h",
+		"stdout":  string(output),
+		"ok":      err == nil,
+	}
+	if err != nil {
+		status["error"] = err.Error()
+	}
+	return status
 }
 
 func osStatus(cfg Config) map[string]any {
@@ -97,7 +114,10 @@ func controlPlaneStatus(cfg Config) map[string]any {
 		"wwwRoot":       cfg.WWWRoot,
 		"metricsDb":     cfg.MetricsDB,
 		"networkConfig": cfg.NetworkConfig,
+		"usersFile":     cfg.AuthUsersFile,
 		"tokenAuth":     fileExists(cfg.TokenFile),
+		"jwtAuth":       fileExists(cfg.TokenFile),
+		"loginAuth":     hasLoginCredentials(cfg),
 	}
 }
 

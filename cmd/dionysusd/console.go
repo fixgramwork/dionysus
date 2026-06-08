@@ -7,13 +7,14 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"syscall"
 	"time"
 )
 
 const (
-	consoleCommandTimeout = 5 * time.Second
-	consoleOutputLimit    = 32 * 1024
-	consoleCommandMaxLen  = 4096
+	consoleOutputLimit   = 32 * 1024
+	consoleCommandMaxLen = 4096
+	consoleMaxTimeout    = 10 * time.Minute
 )
 
 type limitedBuffer struct {
@@ -41,7 +42,7 @@ func (buffer *limitedBuffer) String() string {
 	return buffer.buffer.String()
 }
 
-func runConsoleCommand(_ Config, body map[string]any) (map[string]any, error) {
+func runConsoleCommand(cfg Config, body map[string]any) (map[string]any, error) {
 	command := strings.TrimSpace(jsonString(body, "command", ""))
 	if command == "" {
 		return nil, fmt.Errorf("command is required")
@@ -55,7 +56,8 @@ func runConsoleCommand(_ Config, body map[string]any) (map[string]any, error) {
 		cwd = "/"
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), consoleCommandTimeout)
+	timeout := consoleTimeout(cfg, body)
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
 	stdout := &limitedBuffer{limit: consoleOutputLimit}
@@ -65,6 +67,17 @@ func runConsoleCommand(_ Config, body map[string]any) (map[string]any, error) {
 	cmd.Env = append(os.Environ(), "PATH=/bin:/sbin:/usr/bin:/usr/sbin")
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error {
+		if cmd.Process == nil {
+			return nil
+		}
+		if err := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL); err != nil && err != syscall.ESRCH {
+			return err
+		}
+		return nil
+	}
+	cmd.WaitDelay = 2 * time.Second
 
 	started := time.Now()
 	err := cmd.Run()
@@ -91,4 +104,20 @@ func runConsoleCommand(_ Config, body map[string]any) (map[string]any, error) {
 		"stdoutTruncated": stdout.truncated,
 		"timedOut":        timedOut,
 	}, nil
+}
+
+func consoleTimeout(cfg Config, body map[string]any) time.Duration {
+	seconds := cfg.ConsoleTimeoutSeconds
+	if seconds <= 0 {
+		seconds = defaultConsoleTimeoutSecs
+	}
+	if bodySeconds := asInt64(body["timeoutSeconds"]); bodySeconds > 0 {
+		seconds = int(bodySeconds)
+	}
+
+	timeout := time.Duration(seconds) * time.Second
+	if timeout > consoleMaxTimeout {
+		return consoleMaxTimeout
+	}
+	return timeout
 }

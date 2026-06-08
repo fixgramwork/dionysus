@@ -6,26 +6,36 @@
     Cpu,
     Database,
     KeyRound,
+    LogIn,
+    LogOut,
     Play,
     RefreshCw,
     Save,
     Server,
     Settings,
+    Trash2,
+    User,
     Wifi,
     Zap
   } from '@lucide/svelte';
-  import { api, postJSON, readToken, writeToken } from './api.js';
+  import { api, clearToken, login, postJSON, readToken } from './api.js';
 
   const tabs = [
     { id: 'overview', label: 'Overview', icon: Server },
     { id: 'network', label: 'Network', icon: Wifi },
     { id: 'llm', label: 'Local LLM', icon: Cpu },
     { id: 'services', label: 'Services', icon: Activity },
+    { id: 'users', label: 'Users', icon: User },
     { id: 'console', label: 'Console', icon: Database }
   ];
 
   let activeTab = 'overview';
-  let token = readToken();
+  let authenticated = !!readToken();
+  let session = null;
+  let loginUsername = 'root';
+  let loginPassword = '';
+  let loginLoading = false;
+  let loginError = '';
   let loading = false;
   let liveLoading = false;
   let error = '';
@@ -35,6 +45,7 @@
   let services = [];
   let network = null;
   let networkDraft = null;
+  let previousNetworkSample = null;
   let ollama = null;
   let history = [];
   let consoleLines = [];
@@ -42,14 +53,14 @@
   let consoleCwd = '/';
   let consoleRunning = false;
   let terminalEntries = [];
+  let users = [];
+  let userLoading = false;
+  let userError = '';
+  let newUser = { username: '', password: '', confirm: '' };
+  let passwordDrafts = {};
 
   function clone(value) {
     return JSON.parse(JSON.stringify(value || {}));
-  }
-
-  function rememberToken() {
-    writeToken(token);
-    pushConsole('info', token ? 'API token stored in this browser.' : 'API token cleared.');
   }
 
   function pushConsole(level, message) {
@@ -59,7 +70,63 @@
     ].slice(0, 80);
   }
 
+  function resetNodeState() {
+    version = null;
+    status = null;
+    services = [];
+    users = [];
+    network = null;
+    networkDraft = null;
+    previousNetworkSample = null;
+    ollama = null;
+    history = [];
+    savedAt = '';
+  }
+
+  function handleAPIError(err, log = true) {
+    if (err.status === 401) {
+      clearToken();
+      authenticated = false;
+      session = null;
+      resetNodeState();
+      loginError = err.message || 'Session expired';
+    }
+    error = err.message;
+    if (log) {
+      pushConsole('error', err.message);
+    }
+  }
+
+  async function submitLogin() {
+    loginLoading = true;
+    loginError = '';
+    error = '';
+    try {
+      session = await login(loginUsername.trim(), loginPassword);
+      authenticated = true;
+      loginPassword = '';
+      pushConsole('info', `Signed in as ${session.username}.`);
+      await refresh();
+    } catch (err) {
+      clearToken();
+      authenticated = false;
+      loginError = err.message;
+      error = err.message;
+    } finally {
+      loginLoading = false;
+    }
+  }
+
+  function logout() {
+    clearToken();
+    authenticated = false;
+    session = null;
+    resetNodeState();
+    pushConsole('info', 'Signed out.');
+  }
+
   async function refresh() {
+    if (!authenticated) return;
     loading = true;
     error = '';
     try {
@@ -71,24 +138,66 @@
         api('/api2/json/nodes/localhost/ollama/status'),
         api('/api2/json/nodes/localhost/ollama/history?limit=120')
       ]);
+      const [nextSession, nextUsers] = await Promise.all([
+        api('/api2/json/access/session'),
+        api('/api2/json/access/users')
+      ]);
       version = nextVersion;
+      session = nextSession;
       status = nextStatus;
       services = nextServices || [];
-      network = nextNetwork;
+      users = nextUsers || [];
+      network = withNetworkRates(nextNetwork);
       networkDraft = clone(nextNetwork?.config);
       ollama = nextOllama;
       history = nextHistory || [];
       savedAt = new Date().toLocaleTimeString();
       pushConsole('info', 'Refreshed node state from API2.');
     } catch (err) {
-      error = err.message;
-      pushConsole('error', err.message);
+      handleAPIError(err);
     } finally {
       loading = false;
     }
   }
 
+  function withNetworkRates(nextNetwork) {
+    if (!nextNetwork) return nextNetwork;
+    const sampledAt = Date.now();
+    const elapsedSeconds = previousNetworkSample
+      ? Math.max((sampledAt - previousNetworkSample.sampledAt) / 1000, 0.001)
+      : 0;
+
+    const interfaces = (nextNetwork.interfaces || []).map((iface) => {
+      const previous = previousNetworkSample?.interfaces?.[iface.name];
+      const rxBytes = Number(iface.rxBytes || 0);
+      const txBytes = Number(iface.txBytes || 0);
+      const rxDelta = previous ? Math.max(0, rxBytes - previous.rxBytes) : 0;
+      const txDelta = previous ? Math.max(0, txBytes - previous.txBytes) : 0;
+      return {
+        ...iface,
+        rxRateBytes: elapsedSeconds > 0 ? rxDelta / elapsedSeconds : 0,
+        txRateBytes: elapsedSeconds > 0 ? txDelta / elapsedSeconds : 0
+      };
+    });
+
+    previousNetworkSample = {
+      sampledAt,
+      interfaces: Object.fromEntries(
+        interfaces.map((iface) => [
+          iface.name,
+          {
+            rxBytes: Number(iface.rxBytes || 0),
+            txBytes: Number(iface.txBytes || 0)
+          }
+        ])
+      )
+    };
+
+    return { ...nextNetwork, interfaces };
+  }
+
   async function refreshLive() {
+    if (!authenticated) return;
     if (loading || liveLoading) return;
     liveLoading = true;
     try {
@@ -97,9 +206,10 @@
       error = '';
     } catch (err) {
       if (error !== err.message) {
-        pushConsole('error', err.message);
+        handleAPIError(err);
+      } else {
+        handleAPIError(err, false);
       }
-      error = err.message;
     } finally {
       liveLoading = false;
     }
@@ -119,8 +229,7 @@
       }
       await refresh();
     } catch (err) {
-      error = err.message;
-      pushConsole('error', err.message);
+      handleAPIError(err);
     }
   }
 
@@ -130,8 +239,7 @@
       pushConsole(dryRun ? 'warn' : 'info', `network service ${result.status}`);
       await refresh();
     } catch (err) {
-      error = err.message;
-      pushConsole('error', err.message);
+      handleAPIError(err);
     }
   }
 
@@ -144,8 +252,7 @@
       }
       await refresh();
     } catch (err) {
-      error = err.message;
-      pushConsole('error', err.message);
+      handleAPIError(err);
     }
   }
 
@@ -177,9 +284,85 @@
         },
         ...terminalEntries
       ].slice(0, 20);
-      pushConsole('error', err.message);
+      handleAPIError(err);
     } finally {
       consoleRunning = false;
+    }
+  }
+
+  async function refreshUsers() {
+    try {
+      const [nextSession, nextUsers] = await Promise.all([
+        api('/api2/json/access/session'),
+        api('/api2/json/access/users')
+      ]);
+      session = nextSession;
+      users = nextUsers || [];
+      userError = '';
+    } catch (err) {
+      userError = err.message;
+      handleAPIError(err);
+    }
+  }
+
+  async function createUser() {
+    userError = '';
+    const username = newUser.username.trim();
+    if (newUser.password !== newUser.confirm) {
+      userError = 'password confirmation does not match';
+      return;
+    }
+    userLoading = true;
+    try {
+      const created = await postJSON('/api2/json/access/users', {
+        username,
+        password: newUser.password
+      });
+      newUser = { username: '', password: '', confirm: '' };
+      pushConsole('info', `user created: ${created.username}`);
+      await refreshUsers();
+    } catch (err) {
+      userError = err.message;
+      handleAPIError(err);
+    } finally {
+      userLoading = false;
+    }
+  }
+
+  function setPasswordDraft(username, value) {
+    passwordDrafts = { ...passwordDrafts, [username]: value };
+  }
+
+  async function updateUserPassword(username) {
+    const password = passwordDrafts[username] || '';
+    userError = '';
+    userLoading = true;
+    try {
+      await postJSON('/api2/json/access/users/password', { username, password });
+      passwordDrafts = { ...passwordDrafts, [username]: '' };
+      pushConsole('info', `password updated: ${username}`);
+      await refreshUsers();
+    } catch (err) {
+      userError = err.message;
+      handleAPIError(err);
+    } finally {
+      userLoading = false;
+    }
+  }
+
+  async function deleteUser(username) {
+    if (!window.confirm(`Delete user ${username}?`)) return;
+    userError = '';
+    userLoading = true;
+    try {
+      await postJSON('/api2/json/access/users/delete', { username });
+      pushConsole('warn', `user deleted: ${username}`);
+      await refreshUsers();
+    } catch (err) {
+      userError = err.message;
+      handleAPIError(err);
+    } finally {
+      userLoading = false;
     }
   }
 
@@ -198,6 +381,22 @@
     return `${Number(value || 0).toFixed(1)}%`;
   }
 
+  function clampPercent(value) {
+    const next = Number(value || 0);
+    if (!Number.isFinite(next)) return 0;
+    return Math.max(0, Math.min(100, next));
+  }
+
+  function hasFiniteNumber(value) {
+    return Number.isFinite(Number(value));
+  }
+
+  function visibleGaugePercent(value, ready = true) {
+    if (!ready) return 0;
+    const next = clampPercent(value);
+    return next === 0 ? 1.5 : next;
+  }
+
   function ratioPercent(used, total) {
     const nextTotal = Number(total || 0);
     if (nextTotal <= 0) return 0;
@@ -214,6 +413,12 @@
     return `${minutes}m`;
   }
 
+  function formatDate(value) {
+    const timestamp = Number(value || 0);
+    if (timestamp <= 0) return '-';
+    return new Date(timestamp * 1000).toLocaleString();
+  }
+
   function stateClass(state) {
     if (state === 'active' || state === 'ready' || state === 'api-online' || state === 'restarted') return 'ok';
     if (state === 'failed' || state === 'missing') return 'bad';
@@ -226,11 +431,17 @@
   $: os = status?.os || {};
   $: controlPlane = status?.controlPlane || {};
   $: kv = ollama?.kvCache || {};
+  $: cpuReady = cpu.state === 'ready' || hasFiniteNumber(cpu.usedPercent);
+  $: cpuUsedPercent = clampPercent(cpu.usedPercent);
+  $: cpuGaugePercent = visibleGaugePercent(cpu.usedPercent, cpuReady);
+  $: cpuUsageText = cpuReady ? formatPercent(cpu.usedPercent) : '-';
   $: memoryUsedPercent = ratioPercent(memory.used, memory.total);
   $: swapUsedPercent = ratioPercent(swap.used, swap.total);
 
   onMount(() => {
-    refresh();
+    if (authenticated) {
+      refresh();
+    }
     const interval = window.setInterval(refreshLive, 2000);
     return () => window.clearInterval(interval);
   });
@@ -250,16 +461,57 @@
       {/if}
     </div>
     <div class="top-actions">
-      <label class="token-field">
-        <KeyRound size={15} />
-        <input type="password" placeholder="API token" bind:value={token} on:change={rememberToken} />
-      </label>
-      <button class="icon-button" on:click={refresh} disabled={loading} title="Refresh state">
-        <RefreshCw size={16} class={loading ? 'spin' : ''} />
-      </button>
+      {#if authenticated}
+        <span class="session-user">
+          <User size={15} />
+          {session?.username || 'signed in'}
+        </span>
+        <button class="icon-button" on:click={refresh} disabled={loading} title="Refresh state">
+          <RefreshCw size={16} class={loading ? 'spin' : ''} />
+        </button>
+        <button class="icon-button" on:click={logout} title="Sign out">
+          <LogOut size={16} />
+        </button>
+      {:else}
+        <span class="session-user">
+          <KeyRound size={15} />
+          Sign in required
+        </span>
+      {/if}
     </div>
   </header>
 
+  {#if !authenticated}
+    <main class="login-screen">
+      <form class="login-panel" on:submit|preventDefault={submitLogin}>
+        <div class="login-heading">
+          <KeyRound size={22} />
+          <div>
+            <h1>Dionysus Console</h1>
+            <span>Sign in to continue</span>
+          </div>
+        </div>
+        <label>
+          <span>Username</span>
+          <input bind:value={loginUsername} autocomplete="username" />
+        </label>
+        <label>
+          <span>Password</span>
+          <input type="password" bind:value={loginPassword} autocomplete="current-password" />
+        </label>
+        {#if loginError}
+          <div class="notice login-error">
+            <AlertTriangle size={16} />
+            <span>{loginError}</span>
+          </div>
+        {/if}
+        <button class="primary login-submit" type="submit" disabled={loginLoading || !loginUsername.trim() || !loginPassword}>
+          <LogIn size={16} />
+          Sign in
+        </button>
+      </form>
+    </main>
+  {:else}
   <div class="workspace">
     <aside class="sidebar">
       <div class="node-block">
@@ -282,7 +534,7 @@
         </div>
         <div>
           <span class="label">CPU</span>
-          <strong>{cpu.state === 'ready' ? formatPercent(cpu.usedPercent) : '-'}</strong>
+          <strong>{cpuUsageText}</strong>
         </div>
         <div>
           <span class="label">RAM</span>
@@ -316,40 +568,50 @@
 
           <article class="panel">
             <h2>CPU</h2>
-            <div class="metric-summary">
-              <div>
-                <span class="label">Usage</span>
-                <strong>{cpu.state === 'ready' ? formatPercent(cpu.usedPercent) : '-'}</strong>
+            <div class="gauge-layout">
+              <div class="arc-gauge">
+                <svg viewBox="0 0 188 108" role="img" aria-label={`CPU usage ${cpuUsageText}`}>
+                  <path class="gauge-track" d="M 18 90 A 76 76 0 0 1 170 90" pathLength="100" />
+                  <path class="gauge-fill cpu" class:idle={cpuReady && cpuUsedPercent === 0} d="M 18 90 A 76 76 0 0 1 170 90" pathLength="100" stroke-dasharray={`${cpuGaugePercent} 100`} />
+                </svg>
+                <div class="gauge-readout">
+                  <span>CPU</span>
+                  <strong>{cpuUsageText}</strong>
+                </div>
               </div>
-              <span>{cpu.cores || 0} cores</span>
-            </div>
-            <div class="meter-row">
-              <span>Total</span>
-              <meter min="0" max="100" value={cpu.usedPercent || 0}></meter>
-              <strong>{formatPercent(cpu.usedPercent)}</strong>
+              <div class="gauge-facts">
+                <span>{cpuReady ? `${cpu.cores || 0} cores` : '-'}</span>
+                <span>User {cpuReady ? formatPercent(cpu.userPercent) : '-'}</span>
+                <span>System {cpuReady ? formatPercent(cpu.systemPercent) : '-'}</span>
+              </div>
             </div>
             <div class="metric-breakdown">
-              <span>User {formatPercent(cpu.userPercent)}</span>
-              <span>System {formatPercent(cpu.systemPercent)}</span>
-              <span>I/O wait {formatPercent(cpu.iowaitPercent)}</span>
-              <span>Idle {formatPercent(cpu.idlePercent)}</span>
+              <span>User {cpuReady ? formatPercent(cpu.userPercent) : '-'}</span>
+              <span>System {cpuReady ? formatPercent(cpu.systemPercent) : '-'}</span>
+              <span>I/O wait {cpuReady ? formatPercent(cpu.iowaitPercent) : '-'}</span>
+              <span>Idle {cpuReady ? formatPercent(cpu.idlePercent) : '-'}</span>
             </div>
-            <p class="muted">{cpu.model || 'CPU model unavailable'} · sample {cpu.sampleMillis || 0} ms</p>
+            <p class="muted">{cpuReady ? (cpu.model || 'CPU model unavailable') : 'CPU sample unavailable'} · sample {cpuReady ? (cpu.sampleMillis || 0) : 0} ms</p>
           </article>
 
           <article class="panel">
             <h2>Memory</h2>
-            <div class="metric-summary">
-              <div>
-                <span class="label">RAM Used</span>
-                <strong>{formatPercent(memoryUsedPercent)}</strong>
+            <div class="gauge-layout">
+              <div class="arc-gauge">
+                <svg viewBox="0 0 188 108" role="img" aria-label={`RAM usage ${formatPercent(memoryUsedPercent)}`}>
+                  <path class="gauge-track" d="M 18 90 A 76 76 0 0 1 170 90" pathLength="100" />
+                  <path class="gauge-fill ram" d="M 18 90 A 76 76 0 0 1 170 90" pathLength="100" stroke-dasharray={`${clampPercent(memoryUsedPercent)} 100`} />
+                </svg>
+                <div class="gauge-readout">
+                  <span>RAM</span>
+                  <strong>{formatPercent(memoryUsedPercent)}</strong>
+                </div>
               </div>
-              <span>{formatBytes(memory.available)} available</span>
-            </div>
-            <div class="meter-row">
-              <span>RAM</span>
-              <meter min="0" max={memory.total || 1} value={memory.used || 0}></meter>
-              <strong>{formatPercent(memoryUsedPercent)}</strong>
+              <div class="gauge-facts">
+                <span>{formatBytes(memory.available)} available</span>
+                <span>{formatBytes(memory.used)} used</span>
+                <span>{formatBytes(memory.total)} total</span>
+              </div>
             </div>
             <div class="meter-row">
               <span>Swap</span>
@@ -440,13 +702,14 @@
           <article class="panel">
             <h2>Interfaces</h2>
             <table>
-              <thead><tr><th>Name</th><th>State</th><th>Address</th><th>Traffic</th></tr></thead>
+              <thead><tr><th>Name</th><th>State</th><th>Address</th><th>Rate</th><th>Total</th></tr></thead>
               <tbody>
                 {#each network?.interfaces || [] as iface}
                   <tr>
                     <td>{iface.name}</td>
                     <td><span class={stateClass(iface.operstate)}>{iface.operstate || '-'}</span></td>
                     <td>{(iface.addresses || []).join(', ') || iface.address || '-'}</td>
+                    <td>{formatBytes(iface.rxRateBytes)}/s in / {formatBytes(iface.txRateBytes)}/s out</td>
                     <td>{formatBytes(iface.rxBytes)} in / {formatBytes(iface.txBytes)} out</td>
                   </tr>
                 {/each}
@@ -514,6 +777,74 @@
                     <td>{formatBytes(row.swap.used)}</td>
                     <td>{formatBytes(row.ollama.processRss)}</td>
                     <td>{row.ollama.loadedModelCount}</td>
+                  </tr>
+                {/each}
+              </tbody>
+            </table>
+          </article>
+        </section>
+      {:else if activeTab === 'users'}
+        <section class="grid two">
+          <article class="panel">
+            <h2>Add User</h2>
+            <form class="user-form" on:submit|preventDefault={createUser}>
+              <label>
+                <span>Username</span>
+                <input bind:value={newUser.username} autocomplete="off" spellcheck="false" />
+              </label>
+              <label>
+                <span>Password</span>
+                <input type="password" bind:value={newUser.password} autocomplete="new-password" />
+              </label>
+              <label>
+                <span>Confirm</span>
+                <input type="password" bind:value={newUser.confirm} autocomplete="new-password" />
+              </label>
+              {#if userError}
+                <div class="notice user-error">
+                  <AlertTriangle size={16} />
+                  <span>{userError}</span>
+                </div>
+              {/if}
+              <div class="button-row compact">
+                <button class="primary" type="submit" disabled={userLoading || !newUser.username.trim() || newUser.password.length < 8 || newUser.confirm.length < 8}>
+                  <User size={15} />
+                  Add User
+                </button>
+              </div>
+            </form>
+          </article>
+
+          <article class="panel wide">
+            <h2>User Accounts</h2>
+            <table>
+              <thead><tr><th>Username</th><th>Created</th><th>Updated</th><th>Password</th><th>Delete</th></tr></thead>
+              <tbody>
+                {#each users as user}
+                  <tr>
+                    <td>{user.username}</td>
+                    <td>{formatDate(user.createdAt)}</td>
+                    <td>{formatDate(user.updatedAt)}</td>
+                    <td>
+                      <div class="user-row-actions">
+                        <input
+                          type="password"
+                          autocomplete="new-password"
+                          placeholder="New password"
+                          value={passwordDrafts[user.username] || ''}
+                          on:input={(event) => setPasswordDraft(user.username, event.currentTarget.value)}
+                        />
+                        <button on:click={() => updateUserPassword(user.username)} disabled={userLoading || (passwordDrafts[user.username] || '').length < 8}>
+                          <Save size={15} />
+                          Set
+                        </button>
+                      </div>
+                    </td>
+                    <td>
+                      <button on:click={() => deleteUser(user.username)} disabled={userLoading || user.username === session?.username || users.length <= 1} title="Delete user">
+                        <Trash2 size={15} />
+                      </button>
+                    </td>
                   </tr>
                 {/each}
               </tbody>
@@ -589,4 +920,5 @@
       {/if}
     </main>
   </div>
+  {/if}
 </div>

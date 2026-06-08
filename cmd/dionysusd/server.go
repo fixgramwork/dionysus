@@ -1,11 +1,9 @@
 package main
 
 import (
-	"crypto/subtle"
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"os"
 	"path"
 	"path/filepath"
 	"strconv"
@@ -49,14 +47,21 @@ func (handler appHandler) ServeHTTP(w http.ResponseWriter, request *http.Request
 	}
 
 	if strings.HasPrefix(request.URL.Path, "/api2/json/") {
-		if err := authorize(handler.cfg, request); err != nil {
-			w.Header().Set("WWW-Authenticate", `Bearer realm="Dionysus PVE"`)
-			writeAPIError(w, http.StatusUnauthorized, "auth", err.Error())
-			return
+		if !isPublicAPI(request) {
+			if err := authorize(handler.cfg, request); err != nil {
+				w.Header().Set("WWW-Authenticate", `Bearer realm="Dionysus PVE"`)
+				writeAPIError(w, http.StatusUnauthorized, "auth", err.Error())
+				return
+			}
 		}
 		data, status, err := handleAPI(handler.cfg, request)
 		if err != nil {
-			writeAPIError(w, status, "path", err.Error())
+			key := "path"
+			if status == http.StatusUnauthorized {
+				key = "auth"
+				w.Header().Set("WWW-Authenticate", `Bearer realm="Dionysus PVE"`)
+			}
+			writeAPIError(w, status, key, err.Error())
 			return
 		}
 		writeAPIData(w, http.StatusOK, data)
@@ -73,6 +78,50 @@ func (handler appHandler) ServeHTTP(w http.ResponseWriter, request *http.Request
 
 func handleAPI(cfg Config, request *http.Request) (any, int, error) {
 	switch request.Method + " " + request.URL.Path {
+	case "POST /api2/json/access/ticket":
+		body := readJSONBody(request)
+		data, err := loginTicket(cfg, body)
+		if err != nil {
+			return nil, http.StatusUnauthorized, err
+		}
+		return data, http.StatusOK, nil
+	case "GET /api2/json/access/session":
+		data, err := currentSession(cfg, request)
+		if err != nil {
+			return nil, http.StatusUnauthorized, err
+		}
+		return data, http.StatusOK, nil
+	case "GET /api2/json/access/users":
+		data, err := authUserViews(cfg)
+		if err != nil {
+			return nil, http.StatusInternalServerError, err
+		}
+		return data, http.StatusOK, nil
+	case "POST /api2/json/access/users":
+		body := readJSONBody(request)
+		data, err := createAuthUser(cfg, body)
+		if err != nil {
+			return nil, http.StatusBadRequest, err
+		}
+		return data, http.StatusOK, nil
+	case "POST /api2/json/access/users/password":
+		body := readJSONBody(request)
+		data, err := updateAuthUserPassword(cfg, body)
+		if err != nil {
+			return nil, http.StatusBadRequest, err
+		}
+		return data, http.StatusOK, nil
+	case "POST /api2/json/access/users/delete":
+		session, err := currentSession(cfg, request)
+		if err != nil {
+			return nil, http.StatusUnauthorized, err
+		}
+		body := readJSONBody(request)
+		data, err := deleteAuthUser(cfg, asString(session["username"]), body)
+		if err != nil {
+			return nil, http.StatusBadRequest, err
+		}
+		return data, http.StatusOK, nil
 	case "GET /api2/json/version":
 		return map[string]any{
 			"version": "0.1",
@@ -159,29 +208,6 @@ func serveStaticFile(cfg Config, w http.ResponseWriter, request *http.Request) {
 	}
 
 	writeAPIError(w, http.StatusNotFound, "path", "not found")
-}
-
-func authorize(cfg Config, request *http.Request) error {
-	if !fileExists(cfg.TokenFile) {
-		return nil
-	}
-	raw, err := os.ReadFile(cfg.TokenFile)
-	if err != nil {
-		return fmt.Errorf("token file is unreadable")
-	}
-	expected := strings.TrimSpace(string(raw))
-	header := request.Header.Get("Authorization")
-	provided, ok := strings.CutPrefix(header, "Bearer ")
-	if !ok {
-		provided, ok = strings.CutPrefix(header, "bearer ")
-	}
-	if !ok {
-		return fmt.Errorf("missing bearer token")
-	}
-	if subtle.ConstantTimeCompare([]byte(expected), []byte(provided)) == 1 {
-		return nil
-	}
-	return fmt.Errorf("invalid bearer token")
 }
 
 func writeAPIData(w http.ResponseWriter, status int, data any) {

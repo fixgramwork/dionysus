@@ -7,10 +7,20 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
-const cpuSampleInterval = 120 * time.Millisecond
+const cpuInitialSampleInterval = 500 * time.Millisecond
+const cpuMinimumCachedSampleInterval = 250 * time.Millisecond
+
+var cpuSampleCache = struct {
+	sync.Mutex
+	procRoot  string
+	times     cpuTimes
+	sampledAt time.Time
+	ready     bool
+}{}
 
 type cpuTimes struct {
 	user    int64
@@ -25,25 +35,37 @@ type cpuTimes struct {
 }
 
 func cpuStatus(cfg Config) map[string]any {
-	first, ok := readCPUTimes(cfg.ProcRoot)
+	current, ok := readCPUTimes(cfg.ProcRoot)
 	if !ok {
-		return map[string]any{
-			"state": "unavailable",
-			"cores": readCPUCoreCount(cfg.ProcRoot),
-			"model": readCPUModel(cfg.ProcRoot),
-		}
+		return unavailableCPUStatus(cfg)
+	}
+	currentAt := time.Now()
+
+	previous, previousAt, ok := exchangeCPUSample(cfg.ProcRoot, current, currentAt)
+	if ok {
+		return readyCPUStatus(cfg, previous, current, currentAt.Sub(previousAt))
 	}
 
-	time.Sleep(cpuSampleInterval)
-	second, ok := readCPUTimes(cfg.ProcRoot)
+	time.Sleep(cpuInitialSampleInterval)
+	next, ok := readCPUTimes(cfg.ProcRoot)
 	if !ok {
-		return map[string]any{
-			"state": "unavailable",
-			"cores": readCPUCoreCount(cfg.ProcRoot),
-			"model": readCPUModel(cfg.ProcRoot),
-		}
+		return unavailableCPUStatus(cfg)
 	}
+	nextAt := time.Now()
+	rememberCPUSample(cfg.ProcRoot, next, nextAt)
 
+	return readyCPUStatus(cfg, current, next, nextAt.Sub(currentAt))
+}
+
+func unavailableCPUStatus(cfg Config) map[string]any {
+	return map[string]any{
+		"state": "unavailable",
+		"cores": readCPUCoreCount(cfg.ProcRoot),
+		"model": readCPUModel(cfg.ProcRoot),
+	}
+}
+
+func readyCPUStatus(cfg Config, first cpuTimes, second cpuTimes, sampleDuration time.Duration) map[string]any {
 	status := cpuUsage(first, second)
 	cores := second.cores
 	if cores == 0 {
@@ -52,8 +74,36 @@ func cpuStatus(cfg Config) map[string]any {
 	status["state"] = "ready"
 	status["cores"] = cores
 	status["model"] = readCPUModel(cfg.ProcRoot)
-	status["sampleMillis"] = int64(cpuSampleInterval / time.Millisecond)
+	status["sampleMillis"] = int64(sampleDuration / time.Millisecond)
 	return status
+}
+
+func exchangeCPUSample(procRoot string, current cpuTimes, sampledAt time.Time) (cpuTimes, time.Time, bool) {
+	cpuSampleCache.Lock()
+	defer cpuSampleCache.Unlock()
+
+	previous := cpuSampleCache.times
+	previousAt := cpuSampleCache.sampledAt
+	usePrevious := cpuSampleCache.ready &&
+		cpuSampleCache.procRoot == procRoot &&
+		sampledAt.Sub(previousAt) >= cpuMinimumCachedSampleInterval
+
+	cpuSampleCache.procRoot = procRoot
+	cpuSampleCache.times = current
+	cpuSampleCache.sampledAt = sampledAt
+	cpuSampleCache.ready = true
+
+	return previous, previousAt, usePrevious
+}
+
+func rememberCPUSample(procRoot string, current cpuTimes, sampledAt time.Time) {
+	cpuSampleCache.Lock()
+	defer cpuSampleCache.Unlock()
+
+	cpuSampleCache.procRoot = procRoot
+	cpuSampleCache.times = current
+	cpuSampleCache.sampledAt = sampledAt
+	cpuSampleCache.ready = true
 }
 
 func readCPUTimes(procRoot string) (cpuTimes, bool) {

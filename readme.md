@@ -133,7 +133,7 @@ For a real Ubuntu/Debian Ollama server, install directly on the host with:
 sudo sh scripts/install-pve-control-plane.sh --host
 ```
 
-The host install creates `/etc/dionysus/pve.token`, enables `dionysus-llm-swap.service`, `dionysus-metricsd.service`, `dionysus-pvedaemon.service`, and `dionysus-pveproxy.service`, then serves the management web from inside the OS on port `8006`.
+The host install creates `/etc/dionysus/pve.token` as the JWT signing key plus `/etc/dionysus/pve.users.json` for web console accounts. Legacy `/etc/dionysus/pve.user` and `/etc/dionysus/pve.password` files are still written for initial fallback compatibility. It enables `dionysus-llm-swap.service`, `dionysus-metricsd.service`, `dionysus-pvedaemon.service`, and `dionysus-pveproxy.service`, then serves the management web from inside the OS on port `8006`.
 The installer checks required packages and prints `apt-get` commands when dependencies are missing.
 To let the host install download and install missing packages through `apt-get`, run:
 
@@ -142,11 +142,36 @@ sudo sh scripts/install-pve-control-plane.sh --host --install-deps
 ```
 
 The `--install-deps` path runs `apt-get update` and `apt-get install -y --no-install-recommends ...` only during direct host install.
-The management UI connects directly to the host OS through `dionysusd`: `/proc`, `/sys`, and `/etc/os-release` populate the node OS panel, while the same status response reports the active web listener, static web root, metrics database, network config path, and token-auth state.
+The management UI first signs in through `/api2/json/access/ticket`, stores the returned JWT in the browser, and then connects directly to the host OS through `dionysusd`: `/proc`, `/sys`, and `/etc/os-release` populate the node OS panel, while the same status response reports the active web listener, static web root, metrics database, network config path, and JWT-auth state.
 `dionysus-metricsd` records Ollama RAM samples every 30 seconds in `/var/lib/dionysus/metrics/ollama.sqlite3` and keeps 7 days by default.
 `dionysus-llm-swap.service` creates and enables a dedicated swap file before `ollama.service`, `dionysus-pvedaemon.service`, and `dionysus-pveproxy.service`.
 The web UI includes a KV-cache optimization panel that compares current kernel values against the built-in Ollama KV-cache profile, previews changes, applies them manually, and records operator-visible output in the web console.
+The web UI also includes a Users page for adding console accounts, rotating passwords, and deleting non-current users without editing files by hand.
 `dionysusd` fails closed outside a Linux/systemd target OS by default. Local UI-only development must be explicit with `--dev-allow-host` or `DIONYSUS_DEV_ALLOW_HOST=1`.
+
+For a QEMU OS image where `apt` works inside the guest, build the Debian ARM64 rootfs:
+
+```bash
+make debian-rootfs
+make debian-qemu-run
+```
+
+The Debian path writes an ext4 disk image to `build/debian-arm64/dionysus-debian-arm64.ext4`,
+copies the Debian kernel/initrd to `build/debian-arm64/vmlinuz` and `build/debian-arm64/initrd.img`,
+and installs Dionysus as systemd services inside the rootfs. The guest exposes the management UI at
+`http://127.0.0.1:18106` through QEMU port forwarding. The root password is `dionysus` by default
+and can be changed with `DEBIAN_ROOT_PASSWORD=...`. QEMU also forwards SSH on port `10022`, so the
+default local login is `ssh root@127.0.0.1 -p 10022`.
+The web console login defaults to `root` / `dionysus` and can be changed at image build or install time with
+`DIONYSUS_PVE_USERNAME=...` and `DIONYSUS_PVE_PASSWORD=...`.
+
+The Debian rootfs build uses Docker automatically on non-Linux hosts because it needs `debootstrap`
+and `mkfs.ext4`. It installs `apt`, `systemd`, `linux-image-arm64`, networking tools, `sqlite3`,
+the Go/Svelte Dionysus control plane, and Ollama by default. Set `DIONYSUS_DEBIAN_INCLUDE_OLLAMA=0`
+to skip the large Ollama payload. The web console defaults to a 300-second command timeout through
+`DIONYSUS_CONSOLE_TIMEOUT_SECONDS`, which leaves enough room for QEMU-hosted `apt` update/install
+operations. The image also sets apt to prefer IPv4 and skip translation indexes to keep QEMU package
+metadata refreshes predictable.
 
 Persistent LAN and Wi-Fi settings are managed by the web UI on port `8006` or by editing `/etc/dionysus/network.env`.
 The UI exposes an explicit preview, save, and save-and-apply flow for `dionysus-network.service`.
@@ -225,7 +250,7 @@ make raspi-boot RASPI_CONFIG_TARGET=bcm2712_defconfig RASPI_KERNEL_NAME=kernel_2
 
 The primary Linux-native application slice now follows a Proxmox-style stack:
 
-- `cmd/dionysusd`: Go daemon for API, web proxy, metrics sampling, token auth, and Ollama RAM control
+- `cmd/dionysusd`: Go daemon for API, web proxy, metrics sampling, JWT login auth, user management, and Ollama RAM control
 - `pve/bin/dionysus-pvedaemon`: compatibility wrapper for `dionysusd api`
 - `pve/bin/dionysus-pveproxy`: compatibility wrapper for `dionysusd proxy`
 - `pve/bin/dionysus-metricsd`: compatibility wrapper for `dionysusd metricsd`
