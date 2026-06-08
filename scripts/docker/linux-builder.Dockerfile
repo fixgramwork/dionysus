@@ -14,10 +14,14 @@ RUN apt-get update \
         binutils-aarch64-linux-gnu \
         gcc-aarch64-linux-gnu \
         git \
+        debian-archive-keyring \
+        debootstrap \
+        e2fsprogs \
         kmod \
         libelf-dev \
         libssl-dev \
         python3 \
+        qemu-user-static \
         rsync \
         xz-utils \
         zstd \

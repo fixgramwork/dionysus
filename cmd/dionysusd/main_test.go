@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestParsesOllamaPSPayload(t *testing.T) {
@@ -50,16 +51,98 @@ func TestAuthRequiresExistingTokenFile(t *testing.T) {
 	if err := os.WriteFile(cfg.TokenFile, []byte("secret\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
+	writeFile(t, cfg.AuthUserFile, "root\n")
+	writeFile(t, cfg.AuthPasswordFile, "dionysus\n")
 	if err := authorize(cfg, request); err == nil {
 		t.Fatal("auth should reject missing bearer token")
 	}
 	request.Header.Set("Authorization", "Bearer wrong")
 	if err := authorize(cfg, request); err == nil {
-		t.Fatal("auth should reject wrong token")
+		t.Fatal("auth should reject malformed jwt")
 	}
-	request.Header.Set("Authorization", "Bearer secret")
+
+	token, _, err := issueJWT(cfg, defaultAuthUsername, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("Authorization", "Bearer "+token)
 	if err := authorize(cfg, request); err != nil {
-		t.Fatalf("auth should accept correct token: %v", err)
+		t.Fatalf("auth should accept valid jwt: %v", err)
+	}
+}
+
+func TestLoginTicketIssuesJWT(t *testing.T) {
+	root := uniqueTempDir(t, "login-ticket")
+	cfg := testConfig(root)
+	writeFile(t, cfg.TokenFile, "secret\n")
+	writeFile(t, cfg.AuthUserFile, "admin\n")
+	writeFile(t, cfg.AuthPasswordFile, "dionysus\n")
+
+	if _, err := loginTicket(cfg, map[string]any{"username": "admin", "password": "wrong"}); err == nil {
+		t.Fatal("login should reject wrong password")
+	}
+
+	ticket, err := loginTicket(cfg, map[string]any{"username": "admin", "password": "dionysus"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if asString(ticket["tokenType"]) != "Bearer" || asString(ticket["username"]) != "admin" {
+		t.Fatalf("login ticket mismatch: %#v", ticket)
+	}
+
+	request, _ := http.NewRequest(http.MethodGet, "/api2/json/version", nil)
+	request.Header.Set("Authorization", "Bearer "+asString(ticket["token"]))
+	if err := authorize(cfg, request); err != nil {
+		t.Fatalf("auth should accept login jwt: %v", err)
+	}
+}
+
+func TestManagesAuthUsers(t *testing.T) {
+	root := uniqueTempDir(t, "auth-users")
+	cfg := testConfig(root)
+	writeFile(t, cfg.TokenFile, "secret\n")
+	writeFile(t, cfg.AuthUserFile, "root\n")
+	writeFile(t, cfg.AuthPasswordFile, "dionysus\n")
+
+	user, err := createAuthUser(cfg, map[string]any{"username": "ops", "password": "secret123"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if asString(user["username"]) != "ops" {
+		t.Fatalf("created user mismatch: %#v", user)
+	}
+	if !fileExists(cfg.AuthUsersFile) {
+		t.Fatal("users file should be created")
+	}
+
+	if _, err := loginTicket(cfg, map[string]any{"username": "ops", "password": "secret123"}); err != nil {
+		t.Fatalf("new user should login: %v", err)
+	}
+	if _, err := updateAuthUserPassword(cfg, map[string]any{"username": "ops", "password": "secret456"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := loginTicket(cfg, map[string]any{"username": "ops", "password": "secret123"}); err == nil {
+		t.Fatal("old password should be rejected")
+	}
+	if _, err := loginTicket(cfg, map[string]any{"username": "ops", "password": "secret456"}); err != nil {
+		t.Fatalf("updated password should login: %v", err)
+	}
+
+	rootToken, _, err := issueJWT(cfg, "root", time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	request, _ := http.NewRequest(http.MethodPost, "/api2/json/access/users/delete", nil)
+	request.Header.Set("Authorization", "Bearer "+rootToken)
+	session, err := currentSession(cfg, request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := deleteAuthUser(cfg, asString(session["username"]), map[string]any{"username": "ops"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := loginTicket(cfg, map[string]any{"username": "ops", "password": "secret456"}); err == nil {
+		t.Fatal("deleted user should not login")
 	}
 }
 
@@ -104,6 +187,28 @@ func TestParsesProcMemoryAndOllamaProcesses(t *testing.T) {
 	process := asMap(processes[0])
 	if asInt64(process["pid"]) != 123 || asInt64(process["rss"]) != 100*1024 || asInt64(process["swap"]) != 30*1024 {
 		t.Fatalf("process mismatch: %#v", process)
+	}
+}
+
+func TestFreeCommandStatusRunsFreeHumanReadable(t *testing.T) {
+	root := uniqueTempDir(t, "free-command")
+	binDir := filepath.Join(root, "bin")
+	freePath := filepath.Join(binDir, "free")
+	writeFile(t, freePath, "#!/bin/sh\nprintf '               total        used        free\\nMem:           744Mi        48Mi       698Mi\\n'\n")
+	if err := os.Chmod(freePath, 0755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir)
+
+	status := freeCommandStatus()
+	if !asBool(status["ok"]) {
+		t.Fatalf("free command should succeed: %#v", status)
+	}
+	if asString(status["command"]) != "free -h" {
+		t.Fatalf("free command label mismatch: %#v", status)
+	}
+	if !strings.Contains(asString(status["stdout"]), "Mem:") {
+		t.Fatalf("free output missing memory row: %#v", status)
 	}
 }
 
@@ -156,6 +261,27 @@ func TestConsoleCommandReturnsOutputAndExitCode(t *testing.T) {
 	}
 	if asInt64(result["exitCode"]) != 7 {
 		t.Fatalf("console exit code mismatch: %#v", result)
+	}
+}
+
+func TestConsoleCommandTimeoutKillsNestedChild(t *testing.T) {
+	root := uniqueTempDir(t, "console-timeout")
+	cfg := testConfig(root)
+	cfg.ConsoleTimeoutSeconds = 1
+
+	started := time.Now()
+	result, err := runConsoleCommand(cfg, map[string]any{
+		"command": "sh -c 'sleep 10'",
+		"cwd":     root,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !asBool(result["timedOut"]) {
+		t.Fatalf("console command should time out: %#v", result)
+	}
+	if time.Since(started) > 4*time.Second {
+		t.Fatalf("console timeout did not stop nested child quickly: %#v", result)
 	}
 }
 
@@ -338,17 +464,22 @@ func insertSampleForTest(t *testing.T, db string, sample map[string]any, retenti
 
 func testConfig(root string) Config {
 	return Config{
-		Listen:          defaultProxyListen,
-		ProcRoot:        filepath.Join(root, "proc"),
-		SysRoot:         filepath.Join(root, "sys"),
-		EtcRoot:         filepath.Join(root, "etc"),
-		OllamaAPI:       defaultOllamaAPI,
-		MetricsDB:       filepath.Join(root, "metrics.sqlite3"),
-		TokenFile:       filepath.Join(root, "pve.token"),
-		WWWRoot:         root,
-		NetworkConfig:   filepath.Join(root, "network.env"),
-		IntervalSeconds: 30,
-		RetentionDays:   7,
+		Listen:           defaultProxyListen,
+		ProcRoot:         filepath.Join(root, "proc"),
+		SysRoot:          filepath.Join(root, "sys"),
+		EtcRoot:          filepath.Join(root, "etc"),
+		OllamaAPI:        defaultOllamaAPI,
+		MetricsDB:        filepath.Join(root, "metrics.sqlite3"),
+		TokenFile:        filepath.Join(root, "pve.token"),
+		AuthUsersFile:    filepath.Join(root, "pve.users.json"),
+		AuthUserFile:     filepath.Join(root, "pve.user"),
+		AuthPasswordFile: filepath.Join(root, "pve.password"),
+		AuthUsername:     defaultAuthUsername,
+		WWWRoot:          root,
+		NetworkConfig:    filepath.Join(root, "network.env"),
+		IntervalSeconds:  30,
+		RetentionDays:    7,
+		JWTTTLSeconds:    defaultJWTTTLSeconds,
 	}
 }
 

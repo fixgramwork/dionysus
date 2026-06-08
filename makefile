@@ -5,6 +5,8 @@ LINUX_FETCH := sh scripts/fetch-linux.sh
 INITRAMFS_BUILD := sh scripts/build-initramfs.sh
 RASPI_BOOT_BUILD := sh scripts/build-raspi-boot.sh
 PVE_CONTROL_PLANE_INSTALL := sh scripts/install-pve-control-plane.sh
+DEBIAN_ROOTFS_BUILD := sh scripts/build-debian-rootfs.sh
+QEMU_DEBIAN_RUN := sh scripts/run-qemu-debian.sh
 
 GIT := git
 
@@ -13,6 +15,7 @@ INITRAMFS_DIR ?= initramfs/overlay
 PVE_CONTROL_PLANE_ROOTFS ?= $(BUILD_DIR)/pve-control-plane-rootfs
 PVE_CHECK_ROOTFS ?= $(BUILD_DIR)/pve-check-rootfs
 DIONYSUSD_BIN ?= $(BUILD_DIR)/dionysusd
+DIONYSUSD_LINUX_ARM64 ?= $(BUILD_DIR)/dionysusd-linux-arm64
 DIONYSUS_GO_CACHE ?= $(BUILD_DIR)/gocache
 DIONYSUS_GO_MOD_CACHE ?= $(BUILD_DIR)/gomodcache
 DIONYSUS_DEV_LISTEN ?= 127.0.0.1:18008
@@ -20,12 +23,21 @@ DIONYSUS_DEV_DIR ?= $(BUILD_DIR)/dev
 DIONYSUS_DEV_METRICS_DIR ?= $(DIONYSUS_DEV_DIR)/metrics
 DIONYSUS_DEV_METRICS_DB ?= $(DIONYSUS_DEV_METRICS_DIR)/ollama.sqlite3
 DIONYSUS_DEV_TOKEN_FILE ?= $(DIONYSUS_DEV_DIR)/pve.token
+DIONYSUS_DEV_USERS_FILE ?= $(DIONYSUS_DEV_DIR)/pve.users.json
+DIONYSUS_DEV_USER_FILE ?= $(DIONYSUS_DEV_DIR)/pve.user
+DIONYSUS_DEV_PASSWORD_FILE ?= $(DIONYSUS_DEV_DIR)/pve.password
+DIONYSUS_DEV_USERNAME ?= root
+DIONYSUS_DEV_PASSWORD ?= dionysus
 DIONYSUS_DEV_NETWORK_CONFIG ?= $(DIONYSUS_DEV_DIR)/network.env
 DIONYSUS_DEV_WWW ?= pve/www
 PVE_UI_DIR ?= frontend/svelte
 PVE_UI_INDEX := pve/www/index.html
 GO_SOURCES := $(wildcard cmd/dionysusd/*.go)
 PVE_UI_SOURCES := $(PVE_UI_DIR)/package.json $(PVE_UI_DIR)/index.html $(PVE_UI_DIR)/vite.config.js $(wildcard $(PVE_UI_DIR)/src/*)
+DEBIAN_ARCH ?= arm64
+DEBIAN_ROOTFS_IMAGE ?= $(BUILD_DIR)/debian-$(DEBIAN_ARCH)/dionysus-debian-$(DEBIAN_ARCH).ext4
+DEBIAN_KERNEL_IMAGE ?= $(BUILD_DIR)/debian-$(DEBIAN_ARCH)/vmlinuz
+DEBIAN_INITRD_IMAGE ?= $(BUILD_DIR)/debian-$(DEBIAN_ARCH)/initrd.img
 
 RASPI_LINUX_DIR ?= upstream/raspberrypi-linux
 RASPI_LINUX_REMOTE ?= https://github.com/raspberrypi/linux.git
@@ -40,7 +52,7 @@ RASPI_CONFIG_TEMPLATE := config/raspberry-pi/config.txt
 RASPI_CMDLINE_TEMPLATE := config/raspberry-pi/cmdline.txt
 RASPI_KERNEL_NAME ?= kernel8.img
 
-.PHONY: all build run clean help dionysusd pve-ui dev-data pve-check pve-control-plane-install pve-control-plane-host-install raspi-fetch raspi-status raspi-initramfs raspi-boot check-raspi-fetch-tools check-initramfs-tools check-pve-tools
+.PHONY: all build run clean help dionysusd dionysusd-linux-arm64 pve-ui dev-data pve-check pve-control-plane-install pve-control-plane-host-install debian-rootfs debian-qemu-run raspi-fetch raspi-status raspi-initramfs raspi-boot check-raspi-fetch-tools check-initramfs-tools check-pve-tools
 
 all: build
 
@@ -50,6 +62,8 @@ help:
 	@$(STATUS) info "make run       Serve the Go/Svelte control-plane web UI on $(DIONYSUS_DEV_LISTEN)."
 	@$(STATUS) info "make pve-control-plane-install Stage the Go/Svelte API2 web control plane."
 	@$(STATUS) info "make pve-control-plane-host-install Install the Ollama RAM control plane on this systemd host."
+	@$(STATUS) info "make debian-rootfs Build a Debian ARM64 rootfs image with apt and Dionysus services."
+	@$(STATUS) info "make debian-qemu-run Boot the Debian ARM64 rootfs in QEMU."
 	@$(STATUS) info "make raspi-fetch  Clone or update Raspberry Pi Linux in $(RASPI_LINUX_DIR)."
 	@$(STATUS) info "make raspi-initramfs Build a Raspberry Pi ARM64 initramfs archive."
 	@$(STATUS) info "make raspi-boot   Package a Raspberry Pi boot overlay using an existing kernel image."
@@ -90,17 +104,35 @@ build: dionysusd pve-ui
 
 dev-data:
 	@mkdir -p "$(DIONYSUS_DEV_METRICS_DIR)"
+	@if [ ! -f "$(DIONYSUS_DEV_TOKEN_FILE)" ]; then \
+		if command -v openssl >/dev/null 2>&1; then openssl rand -hex 32 > "$(DIONYSUS_DEV_TOKEN_FILE)"; \
+		else printf 'dionysus-dev-jwt-secret\n' > "$(DIONYSUS_DEV_TOKEN_FILE)"; fi; \
+	fi
+	@printf '%s\n' "$(DIONYSUS_DEV_USERNAME)" > "$(DIONYSUS_DEV_USER_FILE)"
+	@printf '%s\n' "$(DIONYSUS_DEV_PASSWORD)" > "$(DIONYSUS_DEV_PASSWORD_FILE)"
+	@if [ ! -f "$(DIONYSUS_DEV_USERS_FILE)" ]; then \
+		now=$$(date +%s); \
+		printf '{\n  "users": [\n    {\n      "username": "%s",\n      "passwordHash": "%s",\n      "createdAt": %s,\n      "updatedAt": %s\n    }\n  ]\n}\n' "$(DIONYSUS_DEV_USERNAME)" "$(DIONYSUS_DEV_PASSWORD)" "$$now" "$$now" > "$(DIONYSUS_DEV_USERS_FILE)"; \
+	fi
+	@chmod 600 "$(DIONYSUS_DEV_TOKEN_FILE)" "$(DIONYSUS_DEV_USERS_FILE)" "$(DIONYSUS_DEV_USER_FILE)" "$(DIONYSUS_DEV_PASSWORD_FILE)"
 
 run: dev-data dionysusd pve-ui
 	@$(STATUS) info "Starting Dionysus control-plane UI at http://$(DIONYSUS_DEV_LISTEN)"
-	@$(DIONYSUSD_BIN) proxy --dev-allow-host --listen "$(DIONYSUS_DEV_LISTEN)" --www-root "$(DIONYSUS_DEV_WWW)" --metrics-db "$(DIONYSUS_DEV_METRICS_DB)" --token-file "$(DIONYSUS_DEV_TOKEN_FILE)" --network-config "$(DIONYSUS_DEV_NETWORK_CONFIG)"
+	@$(DIONYSUSD_BIN) proxy --dev-allow-host --listen "$(DIONYSUS_DEV_LISTEN)" --www-root "$(DIONYSUS_DEV_WWW)" --metrics-db "$(DIONYSUS_DEV_METRICS_DB)" --token-file "$(DIONYSUS_DEV_TOKEN_FILE)" --auth-users-file "$(DIONYSUS_DEV_USERS_FILE)" --auth-user-file "$(DIONYSUS_DEV_USER_FILE)" --auth-password-file "$(DIONYSUS_DEV_PASSWORD_FILE)" --network-config "$(DIONYSUS_DEV_NETWORK_CONFIG)"
 
 dionysusd: $(DIONYSUSD_BIN)
+
+dionysusd-linux-arm64: $(DIONYSUSD_LINUX_ARM64)
 
 $(DIONYSUSD_BIN): go.mod $(GO_SOURCES)
 	@$(STATUS) info "Building Go control-plane daemon"
 	@mkdir -p "$(dir $(DIONYSUSD_BIN))" "$(DIONYSUS_GO_CACHE)" "$(DIONYSUS_GO_MOD_CACHE)"
 	@GOCACHE="$(abspath $(DIONYSUS_GO_CACHE))" GOMODCACHE="$(abspath $(DIONYSUS_GO_MOD_CACHE))" go build -o "$(DIONYSUSD_BIN)" ./cmd/dionysusd
+
+$(DIONYSUSD_LINUX_ARM64): go.mod $(GO_SOURCES)
+	@$(STATUS) info "Building Linux ARM64 Go control-plane daemon"
+	@mkdir -p "$(dir $(DIONYSUSD_LINUX_ARM64))" "$(DIONYSUS_GO_CACHE)" "$(DIONYSUS_GO_MOD_CACHE)"
+	@GOOS=linux GOARCH=arm64 CGO_ENABLED=0 GOCACHE="$(abspath $(DIONYSUS_GO_CACHE))" GOMODCACHE="$(abspath $(DIONYSUS_GO_MOD_CACHE))" go build -o "$(DIONYSUSD_LINUX_ARM64)" ./cmd/dionysusd
 
 pve-ui: $(PVE_UI_INDEX)
 
@@ -128,6 +160,14 @@ pve-control-plane-install: pve-check scripts/install-pve-control-plane.sh $(DION
 pve-control-plane-host-install: pve-check scripts/install-pve-control-plane.sh
 	@$(STATUS) info "Installing Dionysus Ollama RAM control plane on this host"
 	@DIONYSUSD_BIN="$(DIONYSUSD_BIN)" $(PVE_CONTROL_PLANE_INSTALL) --host
+
+debian-rootfs: $(DIONYSUSD_LINUX_ARM64) pve-ui scripts/build-debian-rootfs.sh scripts/install-pve-control-plane.sh scripts/fetch-ollama-linux.sh
+	@$(STATUS) info "Building Debian $(DEBIAN_ARCH) rootfs image at $(DEBIAN_ROOTFS_IMAGE)"
+	@DEBIAN_ARCH="$(DEBIAN_ARCH)" DIONYSUSD_BIN="$(DIONYSUSD_LINUX_ARM64)" DEBIAN_KERNEL_OUT="$(DEBIAN_KERNEL_IMAGE)" DEBIAN_INITRD_OUT="$(DEBIAN_INITRD_IMAGE)" $(DEBIAN_ROOTFS_BUILD) "$(DEBIAN_ROOTFS_IMAGE)"
+
+debian-qemu-run: debian-rootfs scripts/run-qemu-debian.sh
+	@$(STATUS) info "Booting Debian $(DEBIAN_ARCH) rootfs image in QEMU"
+	@DEBIAN_ARCH="$(DEBIAN_ARCH)" DEBIAN_KERNEL_IMAGE="$(DEBIAN_KERNEL_IMAGE)" DEBIAN_INITRD_IMAGE="$(DEBIAN_INITRD_IMAGE)" $(QEMU_DEBIAN_RUN) "$(DEBIAN_ROOTFS_IMAGE)"
 
 raspi-fetch: check-raspi-fetch-tools $(RASPI_FRAGMENT) scripts/fetch-linux.sh
 	@$(STATUS) info "Fetching Raspberry Pi Linux ref $(RASPI_LINUX_REF)"

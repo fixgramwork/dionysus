@@ -50,7 +50,7 @@ Bootloader/Firmware -> Linux kernel -> kernel interfaces -> Dionysus agent -> di
 | Linux kernel | 하드웨어 추상화, 프로세스/메모리/파일시스템/네트워크 핵심 기능 제공 | 검증된 운영체제 기반 | Dionysus UI, 운영자 워크플로 구현 |
 | Kernel interfaces | 커널 상태와 제어 기능을 표준 계약으로 노출 | 안정된 조회/제어 엔트리포인트 | 제품별 UX 정책 강제 |
 | Dionysus agent | Linux 인터페이스 수집, 정책 적용, 안전한 자원 모델 구성 | Dionysus resource model, 감사 가능한 요청 처리 | Linux 핵심 기능 재구현 |
-| Go `dionysusd` API daemon | token auth, API 집계, RAM/Ollama metric 기록, 명시적 최적화 적용 | Proxmox-style `/api2/json` 운영자 API | 커널 우회 직접 제어 |
+| Go `dionysusd` API daemon | 로그인/JWT 인증, 사용자 관리, API 집계, RAM/Ollama metric 기록, 명시적 최적화 적용 | Proxmox-style `/api2/json` 운영자 API | 커널 우회 직접 제어 |
 | Svelte pveproxy-compatible UI | 상태 시각화, diff, 승인 플로우, 제한된 조작 UX | 운영자 화면과 안전한 상호작용 | 정책 원천 결정 |
 
 ## OS 내부 관리 웹 실행 모델
@@ -70,13 +70,43 @@ initramfs는 `/proc`, `/sys`, 네트워크, 부트 상태를 확인하고 rescue
 
 - initramfs 경로: `/init` 이 `dionysus-agent bootstrap`, `dionysus-network start`, `dionysus-services banner` 를 실행합니다.
 - rootfs 경로: `dionysus-network.service`, `dionysus-pvedaemon.service`, `dionysus-pveproxy.service`, `dionysus-llm-swap.service` 를 systemd가 관리합니다.
-- OS 상태 연결 경로: `/api2/json/nodes/localhost/status` 는 `/proc`, `/sys`, `/etc/os-release` 에서 읽은 운영체제 정보와 현재 `dionysusd proxy` 의 웹 리스너, 정적 루트, metrics DB, network config, token-auth 상태를 함께 제공합니다.
+- 인증 경로: `/api2/json/access/ticket` 은 `/etc/dionysus/pve.users.json` 에 저장된 운영자에게 JWT를 발급하고, 나머지 `/api2/json` API는 `Authorization: Bearer <jwt>` 를 요구합니다. `/api2/json/access/users` 계열 API는 웹 UI의 Users 페이지에서 계정 추가, 비밀번호 변경, 삭제를 처리합니다.
+- OS 상태 연결 경로: `/api2/json/nodes/localhost/status` 는 `/proc`, `/sys`, `/etc/os-release` 에서 읽은 운영체제 정보와 현재 `dionysusd proxy` 의 웹 리스너, 정적 루트, metrics DB, network config, JWT-auth 상태를 함께 제공합니다.
 - 네트워크 변경 경로: `/api2/json/nodes/localhost/network/config` 는 LAN/Wi-Fi 설정을 저장하고, 명시적 apply 요청에서만 `dionysus-network.service` 재시작을 요청합니다.
 
 이 구조에서 호스트 OS가 살아 있으면 관리 웹도 살아 있고, 호스트 OS 자체가 종료되면 관리 웹도 함께 종료됩니다.
 VM이나 컨테이너 같은 게스트의 상태는 호스트 OS 내부의 Dionysus 서비스가 관찰하고 제어합니다.
 
 systemd rootfs의 기본 관리 화면은 Go `dionysusd proxy` 가 Svelte 빌드 결과를 제공하는 방식으로 실행합니다.
+
+## Debian rootfs QEMU 경로
+
+`apt` 와 systemd로 관리되는 실제 OS 형태가 필요할 때는 initramfs에 패키지 관리자를 억지로 넣지 않고,
+Debian rootfs 디스크 이미지를 붙여 부팅합니다.
+
+```text
+QEMU virt machine -> Debian Linux kernel/initrd -> Debian ext4 rootfs -> systemd -> Dionysus services
+```
+
+이 경로의 빌드 기준은 다음과 같습니다.
+
+- `make debian-rootfs`: Docker 또는 Linux host의 `debootstrap` 으로 Debian ARM64 rootfs를 만들고 ext4 이미지로 패킹합니다.
+- `make debian-qemu-run`: `qemu-system-aarch64` 에 Debian kernel/initrd와 rootfs 이미지를 붙여 실행합니다.
+- rootfs 내부에는 `apt`, `systemd`, `linux-image-arm64`, 네트워크 도구, `sqlite3`, Go/Svelte Dionysus control plane이 들어갑니다.
+- QEMU 기본 네트워크는 `net.ifnames=0` 과 `dionysus-network.service` 의 `eth0 DHCP` 설정을 사용합니다.
+- Ollama는 Debian rootfs 빌드에서 기본 포함되며, 큰 이미지를 피해야 하면 `DIONYSUS_DEBIAN_INCLUDE_OLLAMA=0` 으로 제외합니다.
+- 웹 콘솔은 Debian 패키지 작업을 위해 `DIONYSUS_CONSOLE_TIMEOUT_SECONDS=300` 을 기본 환경으로 사용합니다.
+- apt는 QEMU user network에서 안정적으로 동작하도록 IPv4 우선과 translation index 생략 설정을 포함합니다.
+- QEMU SSH 포워딩은 `127.0.0.1:10022 -> guest:22` 이며, 로컬 개발 이미지는 `root` 비밀번호 로그인을 허용합니다.
+
+검증할 때는 최소한 아래를 확인합니다.
+
+- `Command: make debian-rootfs`
+- `Result: build/debian-arm64/dionysus-debian-arm64.ext4, vmlinuz, initrd.img 생성`
+- `Command: make debian-qemu-run`
+- `Result: guest systemd가 Dionysus 서비스를 시작하고 http://127.0.0.1:18106 에서 관리 UI 응답`
+- `Guest command: apt update`
+- `Result: Debian apt repository metadata 조회 성공`
 
 ## Local LLM 최적화 방향
 

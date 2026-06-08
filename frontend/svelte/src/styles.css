@@ -101,7 +101,7 @@ meter {
 
 .brand,
 .top-actions,
-.token-field,
+.session-user,
 .button-row,
 .nav-item {
   align-items: center;
@@ -123,19 +123,14 @@ meter {
   gap: 8px;
 }
 
-.token-field {
+.session-user {
   background: #111827;
   border: 1px solid #475569;
   border-radius: 4px;
+  color: #e5edf7;
   gap: 6px;
-  padding-left: 8px;
-}
-
-.token-field input {
-  background: transparent;
-  border: 0;
-  color: #f8fafc;
-  width: 180px;
+  min-height: 34px;
+  padding: 0 10px;
 }
 
 .icon-button {
@@ -143,6 +138,60 @@ meter {
   justify-content: center;
   padding: 0;
   width: 34px;
+}
+
+.login-screen {
+  align-items: center;
+  display: grid;
+  min-height: calc(100vh - 48px);
+  padding: 20px;
+}
+
+.login-panel {
+  background: #fff;
+  border: 1px solid #c8d0da;
+  border-radius: 6px;
+  display: grid;
+  gap: 12px;
+  justify-self: center;
+  max-width: 380px;
+  padding: 18px;
+  width: 100%;
+}
+
+.login-heading {
+  align-items: center;
+  border-bottom: 1px solid #e5e9ef;
+  display: flex;
+  gap: 10px;
+  padding-bottom: 12px;
+}
+
+.login-heading h1 {
+  font-size: 18px;
+  line-height: 1.2;
+  margin: 0;
+}
+
+.login-heading span {
+  color: #637083;
+}
+
+.login-panel label {
+  color: #4b5563;
+  display: grid;
+  gap: 5px;
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.login-error {
+  margin-bottom: 0;
+}
+
+.login-submit {
+  justify-content: center;
 }
 
 .workspace {
@@ -322,6 +371,97 @@ meter {
   text-align: right;
 }
 
+.gauge-layout {
+  align-items: center;
+  border-bottom: 1px solid #e5e9ef;
+  display: grid;
+  gap: 12px;
+  grid-template-columns: 188px minmax(0, 1fr);
+  min-height: 130px;
+  padding: 12px 10px;
+}
+
+.arc-gauge {
+  aspect-ratio: 188 / 108;
+  position: relative;
+  width: 188px;
+}
+
+.arc-gauge svg {
+  display: block;
+  height: 108px;
+  width: 188px;
+}
+
+.gauge-track,
+.gauge-fill {
+  fill: none;
+  stroke-linecap: round;
+  stroke-width: 14;
+}
+
+.gauge-track {
+  stroke: #e1e6ee;
+}
+
+.gauge-fill {
+  stroke-dashoffset: 0;
+}
+
+.gauge-fill.cpu {
+  stroke: #2563eb;
+}
+
+.gauge-fill.cpu.idle {
+  opacity: 0.72;
+  stroke: #64748b;
+}
+
+.gauge-fill.ram {
+  stroke: #16803c;
+}
+
+.gauge-readout {
+  bottom: 8px;
+  display: grid;
+  gap: 2px;
+  left: 0;
+  position: absolute;
+  right: 0;
+  text-align: center;
+}
+
+.gauge-readout span {
+  color: #637083;
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.gauge-readout strong {
+  color: #111827;
+  font-size: 24px;
+  line-height: 1;
+}
+
+.gauge-facts {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+
+.gauge-facts span {
+  background: #f6f8fb;
+  border: 1px solid #e1e6ee;
+  border-radius: 4px;
+  color: #364153;
+  min-width: 0;
+  overflow: hidden;
+  padding: 7px 8px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .metric-breakdown {
   display: grid;
   gap: 8px;
@@ -365,6 +505,42 @@ meter {
   border-top: 1px solid #e5e9ef;
   gap: 8px;
   padding: 10px;
+}
+
+.button-row.compact {
+  border-top: 0;
+  padding: 0;
+}
+
+.user-form {
+  display: grid;
+  gap: 10px;
+  padding: 10px;
+}
+
+.user-form label {
+  color: #4b5563;
+  display: grid;
+  gap: 4px;
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.user-error {
+  margin-bottom: 0;
+}
+
+.user-row-actions {
+  align-items: center;
+  display: grid;
+  gap: 8px;
+  grid-template-columns: minmax(160px, 1fr) auto;
+}
+
+.user-row-actions button {
+  justify-content: center;
+  min-width: 70px;
 }
 
 .ok {
@@ -538,9 +714,14 @@ meter {
   .grid.two,
   .status-strip,
   .form-grid,
+  .gauge-layout,
   .metric-breakdown,
   .cli-form,
   .terminal header {
+    grid-template-columns: 1fr;
+  }
+
+  .user-row-actions {
     grid-template-columns: 1fr;
   }
 

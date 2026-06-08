@@ -8,6 +8,17 @@ STAGING_DIR="${1:-${STAGING_DIR:-build/qemu-web-initramfs/rootfs}}"
 OUTPUT_FILE="${2:-${OUTPUT_FILE:-build/qemu-web-initramfs/dionysus-web-initramfs.cpio.gz}}"
 DIONYSUSD_BIN="${DIONYSUSD_BIN:-build/dionysusd-linux-arm64}"
 WWW_ROOT="${WWW_ROOT:-pve/www}"
+DIONYSUS_INCLUDE_OLLAMA="${DIONYSUS_INCLUDE_OLLAMA:-1}"
+OLLAMA_ARCH="${OLLAMA_ARCH:-arm64}"
+OLLAMA_ROOT="${OLLAMA_ROOT:-build/ollama/linux-$OLLAMA_ARCH/rootfs}"
+OLLAMA_FETCH="${OLLAMA_FETCH:-sh scripts/fetch-ollama-linux.sh}"
+DIONYSUS_PVE_USERNAME="${DIONYSUS_PVE_USERNAME:-root}"
+DIONYSUS_PVE_PASSWORD="${DIONYSUS_PVE_PASSWORD:-dionysus}"
+case "$OLLAMA_ARCH" in
+    amd64) OLLAMA_LOADER="$OLLAMA_ROOT/lib64/ld-linux-x86-64.so.2" ;;
+    arm64) OLLAMA_LOADER="$OLLAMA_ROOT/lib/ld-linux-aarch64.so.1" ;;
+    *) OLLAMA_LOADER="$OLLAMA_ROOT/lib/ld-linux-aarch64.so.1" ;;
+esac
 
 require_file() {
     path="$1"
@@ -25,14 +36,56 @@ require_dir() {
     fi
 }
 
+generate_token() {
+    if command -v openssl >/dev/null 2>&1; then
+        openssl rand -hex 32
+        return
+    fi
+
+    if command -v od >/dev/null 2>&1 && [ -r /dev/urandom ]; then
+        od -An -N32 -tx1 /dev/urandom | tr -d ' \n'
+        printf '\n'
+        return
+    fi
+
+    printf '%s-%s\n' "$(date +%s)" "$$"
+}
+
+hash_password() {
+    password="$1"
+    if command -v sha256sum >/dev/null 2>&1; then
+        printf '%s' "$password" | sha256sum | awk '{print "sha256:" $1}'
+        return
+    fi
+    if command -v shasum >/dev/null 2>&1; then
+        printf '%s' "$password" | shasum -a 256 | awk '{print "sha256:" $1}'
+        return
+    fi
+    printf '%s\n' "$password"
+}
+
 require_dir "$BASE_ROOTFS"
 require_file "$DIONYSUSD_BIN"
 require_file "$WWW_ROOT/index.html"
+
+if [ "$DIONYSUS_INCLUDE_OLLAMA" = "1" ]; then
+    if [ ! -x "$OLLAMA_ROOT/usr/bin/ollama" ] || [ ! -e "$OLLAMA_LOADER" ]; then
+        $STATUS info "Ollama is enabled for this image; preparing $OLLAMA_ROOT"
+        OLLAMA_ARCH="$OLLAMA_ARCH" OLLAMA_ROOT="$OLLAMA_ROOT" $OLLAMA_FETCH
+    fi
+    require_file "$OLLAMA_ROOT/usr/bin/ollama"
+    require_file "$OLLAMA_LOADER"
+fi
 
 $STATUS info "Preparing QEMU web-console initramfs in $STAGING_DIR"
 rm -rf "$STAGING_DIR"
 mkdir -p "$STAGING_DIR"
 cp -R "$BASE_ROOTFS"/. "$STAGING_DIR"
+
+if [ "$DIONYSUS_INCLUDE_OLLAMA" = "1" ]; then
+    $STATUS info "Including Ollama in QEMU web-console initramfs"
+    cp -R "$OLLAMA_ROOT"/. "$STAGING_DIR"/
+fi
 
 mkdir -p \
     "$STAGING_DIR/etc/dionysus" \
@@ -56,9 +109,36 @@ DIONYSUS_ETC_ROOT=/etc
 DIONYSUS_OLLAMA_API=http://127.0.0.1:11434
 DIONYSUS_PVE_WWW=/usr/share/dionysus-pve-manager/www
 DIONYSUS_PVE_TOKEN_FILE=/etc/dionysus/pve.token
+DIONYSUS_PVE_USERS_FILE=/etc/dionysus/pve.users.json
+DIONYSUS_PVE_USER_FILE=/etc/dionysus/pve.user
+DIONYSUS_PVE_PASSWORD_FILE=/etc/dionysus/pve.password
+DIONYSUS_PVE_USERNAME=root
+DIONYSUS_JWT_TTL_SECONDS=43200
 DIONYSUS_NETWORK_CONFIG=/etc/dionysus/network.env
 DIONYSUS_METRICS_DB=/var/lib/dionysus/metrics/ollama.sqlite3
 ENV
+
+generate_token > "$STAGING_DIR/etc/dionysus/pve.token"
+printf '%s\n' "$DIONYSUS_PVE_USERNAME" > "$STAGING_DIR/etc/dionysus/pve.user"
+printf '%s\n' "$DIONYSUS_PVE_PASSWORD" > "$STAGING_DIR/etc/dionysus/pve.password"
+created_at="$(date +%s)"
+password_hash="$(hash_password "$DIONYSUS_PVE_PASSWORD")"
+cat > "$STAGING_DIR/etc/dionysus/pve.users.json" <<EOF
+{
+  "users": [
+    {
+      "username": "$DIONYSUS_PVE_USERNAME",
+      "passwordHash": "$password_hash",
+      "createdAt": $created_at,
+      "updatedAt": $created_at
+    }
+  ]
+}
+EOF
+chmod 600 "$STAGING_DIR/etc/dionysus/pve.token" \
+    "$STAGING_DIR/etc/dionysus/pve.users.json" \
+    "$STAGING_DIR/etc/dionysus/pve.user" \
+    "$STAGING_DIR/etc/dionysus/pve.password"
 
 cat > "$STAGING_DIR/etc/dionysus/network.env" <<'ENV'
 DIONYSUS_NETWORK_ENABLED='1'
@@ -94,6 +174,18 @@ fi
 
 if [ -x /usr/bin/dionysus-network ]; then
     DIONYSUS_NET_IFACE=eth0 /usr/bin/dionysus-network start
+fi
+
+if [ -x /usr/bin/ollama ]; then
+    mkdir -p /var/lib/ollama/models /run/dionysus
+    export HOME="${HOME:-/var/lib/ollama}"
+    export LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-/lib/aarch64-linux-gnu:/usr/lib/aarch64-linux-gnu:/usr/lib/ollama}"
+    export OLLAMA_HOST="${OLLAMA_HOST:-127.0.0.1:11434}"
+    export OLLAMA_MODELS="${OLLAMA_MODELS:-/var/lib/ollama/models}"
+    printf '[dionysus-init] starting Ollama on %s\n' "$OLLAMA_HOST"
+    /usr/bin/ollama serve > /run/dionysus/ollama.log 2>&1 &
+else
+    printf '[dionysus-init] Ollama binary not included\n'
 fi
 
 printf '[dionysus-init] starting web console on 0.0.0.0:8006\n'

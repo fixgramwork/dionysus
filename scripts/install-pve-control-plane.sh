@@ -63,6 +63,8 @@ PVE_DIR="${PVE_DIR:-pve}"
 SYSTEMD_DIR="${SYSTEMD_DIR:-packaging/systemd}"
 DIONYSUS_PROFILES_DIR="${DIONYSUS_PROFILES_DIR:-profiles}"
 DIONYSUSD_BIN="${DIONYSUSD_BIN:-}"
+DIONYSUS_PVE_USERNAME="${DIONYSUS_PVE_USERNAME:-root}"
+DIONYSUS_PVE_PASSWORD="${DIONYSUS_PVE_PASSWORD:-dionysus}"
 
 if [ "$HOST_INSTALL" -eq 1 ] && [ "$(id -u)" -ne 0 ]; then
     $STATUS error "Host install must be run as root, for example: sudo sh scripts/install-pve-control-plane.sh --host"
@@ -90,19 +92,36 @@ add_package() {
     esac
 }
 
+target_has_command() {
+    command_name="$1"
+
+    if [ "$HOST_INSTALL" -eq 1 ] || [ -z "$DESTDIR" ]; then
+        command -v "$command_name" >/dev/null 2>&1
+        return
+    fi
+
+    for path_dir in bin sbin usr/bin usr/sbin; do
+        if [ -x "$DESTDIR/$path_dir/$command_name" ]; then
+            return 0
+        fi
+    done
+
+    return 1
+}
+
 check_dependencies() {
     MISSING_PACKAGES=""
 
     if [ -z "$DIONYSUSD_BIN" ] && [ ! -x build/dionysusd ]; then
         command -v go >/dev/null 2>&1 || add_package golang-go
     fi
-    command -v systemctl >/dev/null 2>&1 || add_package systemd
-    command -v sqlite3 >/dev/null 2>&1 || add_package sqlite3
-    command -v swapon >/dev/null 2>&1 || add_package util-linux
-    command -v mkswap >/dev/null 2>&1 || add_package util-linux
-    command -v ip >/dev/null 2>&1 || add_package iproute2
-    command -v wpa_supplicant >/dev/null 2>&1 || add_package wpasupplicant
-    if ! command -v udhcpc >/dev/null 2>&1 && ! command -v dhclient >/dev/null 2>&1; then
+    target_has_command systemctl || add_package systemd
+    target_has_command sqlite3 || add_package sqlite3
+    target_has_command swapon || add_package util-linux
+    target_has_command mkswap || add_package util-linux
+    target_has_command ip || add_package iproute2
+    target_has_command wpa_supplicant || add_package wpasupplicant
+    if ! target_has_command udhcpc && ! target_has_command dhclient; then
         add_package isc-dhcp-client
     fi
 
@@ -166,6 +185,19 @@ generate_token() {
     printf '%s-%s\n' "$(date +%s)" "$$"
 }
 
+hash_password() {
+    password="$1"
+    if command -v sha256sum >/dev/null 2>&1; then
+        printf '%s' "$password" | sha256sum | awk '{print "sha256:" $1}'
+        return
+    fi
+    if command -v shasum >/dev/null 2>&1; then
+        printf '%s' "$password" | shasum -a 256 | awk '{print "sha256:" $1}'
+        return
+    fi
+    printf '%s\n' "$password"
+}
+
 install_token() {
     token_file="$DESTDIR/etc/dionysus/pve.token"
 
@@ -184,6 +216,56 @@ install_token() {
         $STATUS info "Dionysus API token: $token"
     else
         $STATUS info "Staged API token: $token"
+    fi
+}
+
+install_auth_credentials() {
+    users_file="$DESTDIR/etc/dionysus/pve.users.json"
+    user_file="$DESTDIR/etc/dionysus/pve.user"
+    password_file="$DESTDIR/etc/dionysus/pve.password"
+    created_at="$(date +%s)"
+
+    if [ ! -f "$user_file" ]; then
+        printf '%s\n' "$DIONYSUS_PVE_USERNAME" > "$user_file"
+        $STATUS success "Created web console username file at $user_file"
+    else
+        $STATUS info "Reusing existing web console username file at $user_file"
+    fi
+    chmod 600 "$user_file"
+
+    if [ ! -f "$password_file" ]; then
+        printf '%s\n' "$DIONYSUS_PVE_PASSWORD" > "$password_file"
+        $STATUS success "Created web console password file at $password_file"
+    else
+        $STATUS info "Reusing existing web console password file at $password_file"
+    fi
+    chmod 600 "$password_file"
+
+    if [ ! -f "$users_file" ]; then
+        password_hash="$(hash_password "$DIONYSUS_PVE_PASSWORD")"
+        cat > "$users_file" <<EOF
+{
+  "users": [
+    {
+      "username": "$DIONYSUS_PVE_USERNAME",
+      "passwordHash": "$password_hash",
+      "createdAt": $created_at,
+      "updatedAt": $created_at
+    }
+  ]
+}
+EOF
+        $STATUS success "Created web console users file at $users_file"
+    else
+        $STATUS info "Reusing existing web console users file at $users_file"
+    fi
+    chmod 600 "$users_file"
+
+    if [ "$HOST_INSTALL" -eq 1 ]; then
+        $STATUS info "Dionysus web console username: $DIONYSUS_PVE_USERNAME"
+        $STATUS info "Dionysus web console password: stored in $password_file"
+    else
+        $STATUS info "Staged web console login: $DIONYSUS_PVE_USERNAME / $DIONYSUS_PVE_PASSWORD"
     fi
 }
 
@@ -258,6 +340,7 @@ cp "$SYSTEMD_DIR/dionysus-pve.env" "$DESTDIR/etc/dionysus/pve.env"
 chmod 644 "$DESTDIR/etc/dionysus/pve.env"
 
 install_token
+install_auth_credentials
 
 cp "$SYSTEMD_DIR/dionysus-network" "$DESTDIR/usr/lib/dionysus/dionysus-network"
 cp "$SYSTEMD_DIR/dionysus-network.env" "$DESTDIR/etc/dionysus/network.env"
@@ -302,4 +385,4 @@ ln -sf ../dionysus-pveproxy.service \
 enable_host_services
 
 $STATUS success "Installed Dionysus PVE control plane into $target_label"
-$STATUS info "pveproxy listens on port 8006 and exposes token-protected /api2/json endpoints."
+$STATUS info "pveproxy listens on port 8006 and exposes JWT-protected /api2/json endpoints."

@@ -3,3 +3,4 @@
 /upstream/linux/
 /.gocache/
 node_modules/
+.codex*
