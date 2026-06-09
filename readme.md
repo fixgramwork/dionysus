@@ -133,7 +133,7 @@ For a real Ubuntu/Debian Ollama server, install directly on the host with:
 sudo sh scripts/install-pve-control-plane.sh --host
 ```
 
-The host install creates `/etc/dionysus/pve.token` as the JWT signing key plus `/etc/dionysus/pve.users.json` for web console accounts. Legacy `/etc/dionysus/pve.user` and `/etc/dionysus/pve.password` files are still written for initial fallback compatibility. It enables `dionysus-llm-swap.service`, `dionysus-metricsd.service`, `dionysus-pvedaemon.service`, and `dionysus-pveproxy.service`, then serves the management web from inside the OS on port `8006`.
+The host install creates `/etc/dionysus/pve.token` as the JWT signing key plus `/etc/dionysus/pve.users.json` for web console accounts. Legacy `/etc/dionysus/pve.user` and `/etc/dionysus/pve.password` files are still written for initial fallback compatibility. By default it downloads the Ollama Linux runtime, installs `ollama.service`, enables `ollama.service`, `dionysus-llm-swap.service`, `dionysus-metricsd.service`, `dionysus-pvedaemon.service`, and `dionysus-pveproxy.service`, then serves the management web from inside the OS on port `8006`. Set `DIONYSUS_INSTALL_OLLAMA=0` or pass `--no-install-ollama` to skip the Ollama payload on a host that already manages Ollama another way.
 The installer checks required packages and prints `apt-get` commands when dependencies are missing.
 To let the host install download and install missing packages through `apt-get`, run:
 
@@ -145,10 +145,10 @@ The `--install-deps` path runs `apt-get update` and `apt-get install -y --no-ins
 The management UI first signs in through `/api2/json/access/ticket`, stores the returned JWT in the browser, and then connects directly to the host OS through `dionysusd`: `/proc`, `/sys`, and `/etc/os-release` populate the node OS panel, while the same status response reports the active web listener, static web root, metrics database, network config path, and JWT-auth state.
 `dionysus-metricsd` records Ollama RAM samples every 30 seconds in `/var/lib/dionysus/metrics/ollama.sqlite3` and keeps 7 days by default.
 `dionysus-llm-swap.service` creates and enables a dedicated swap file before `ollama.service`, `dionysus-pvedaemon.service`, and `dionysus-pveproxy.service`.
-`ollama.service` is enabled in the Debian rootfs so it starts automatically at OS boot, and the Local LLM web tab can start/stop the service, list downloaded and loaded models, unload a model, search the Ollama library, and pull a selected model.
+`ollama.service` is enabled in host installs and in the Debian rootfs so it starts automatically at OS boot. The Local LLM web tab can start/stop the service, list installed and loaded models, unload a model, search the Ollama library, and install a selected model. Model installation starts `ollama.service` when needed, pulls the model through the local Ollama API, and confirms that it appears in the local model list before reporting it as installed.
 The web UI includes a KV-cache optimization panel that compares current kernel values against the built-in Ollama KV-cache profile, previews changes, applies them manually, and records operator-visible output in the web console.
 The web UI also includes an APT Packages page that shows the installed package count, lists installed packages with per-package update/delete actions, refreshes package indexes, searches `apt-cache`, and installs selected packages through explicit `apt-get` actions.
-The web UI also includes a Users page where the root account can add console accounts, rotate passwords, delete non-current users, and assign per-user permissions without editing files by hand.
+The web UI also includes a Users page where the root account can add console accounts, rotate passwords, delete non-current users, and assign per-user permissions without editing files by hand; signed-in users can rotate their own password.
 `dionysusd` fails closed outside a Linux/systemd target OS by default. Local UI-only development must be explicit with `--dev-allow-host` or `DIONYSUS_DEV_ALLOW_HOST=1`.
 
 For a QEMU OS image where `apt` works inside the guest, build the Debian ARM64 rootfs:

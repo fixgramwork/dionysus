@@ -11,6 +11,7 @@
     LogOut,
     Package,
     Pencil,
+    Plus,
     Play,
     RefreshCw,
     Save,
@@ -32,6 +33,7 @@
     { id: 'overview', label: 'Overview', icon: Server },
     { id: 'systemd', label: 'Systemd', icon: Activity },
     { id: 'network', label: 'Network', icon: Wifi },
+    { id: 'firewall', label: 'Firewall', icon: Shield },
     { id: 'packages', label: 'Packages', icon: Package },
     { id: 'llm', label: 'Local LLM', icon: Cpu },
     { id: 'services', label: 'Services', icon: Settings },
@@ -48,6 +50,9 @@
   let loginPassword = '';
   let loginLoading = false;
   let loginError = '';
+  let loginFocusedField = '';
+  let loginFailedReaction = false;
+  let loginReactionTimer = null;
   let alerts = [];
   let nextAlertID = 1;
   let loading = false;
@@ -62,6 +67,10 @@
   let network = null;
   let networkDraft = null;
   let previousNetworkSample = null;
+  let firewall = null;
+  let firewallDraft = null;
+  let firewallLoading = false;
+  let firewallRuleDraft = defaultFirewallRule();
   let aptState = null;
   let aptSearchQuery = 'curl';
   let aptSearchResults = [];
@@ -87,15 +96,19 @@
   let consoleCwd = '/';
   let consoleRunning = false;
   let activeConsoleCommand = null;
+  let activeConsoleRunID = '';
   let consoleElapsedMillis = 0;
   let consoleElapsedTimer = null;
+  let consoleStopping = false;
   let terminalInput = null;
   let terminalViewport = null;
   let terminalEntries = [];
+  let nextTerminalEntryID = 1;
   let users = [];
   let permissionOptions = [
     { id: 'node.read', label: 'Node status', description: 'Read node status, metrics, and inventory' },
     { id: 'network.manage', label: 'Network', description: 'Preview, save, and apply network settings' },
+    { id: 'firewall.manage', label: 'Firewall', description: 'Preview, save, and apply host firewall rules' },
     { id: 'packages.manage', label: 'Packages', description: 'Install, remove, and upgrade APT packages' },
     { id: 'llm.manage', label: 'Local LLM', description: 'Read and apply local LLM runtime tuning' },
     { id: 'services.manage', label: 'Services', description: 'Read service state and perform service operations' },
@@ -151,6 +164,10 @@
     network = null;
     networkDraft = null;
     previousNetworkSample = null;
+    firewall = null;
+    firewallDraft = null;
+    firewallLoading = false;
+    firewallRuleDraft = defaultFirewallRule();
     aptState = null;
     aptSearchResults = [];
     aptSearchPage = 1;
@@ -190,6 +207,7 @@
   async function submitLogin() {
     loginLoading = true;
     loginError = '';
+    loginFailedReaction = false;
     error = '';
     try {
       session = await login(loginUsername.trim(), loginPassword);
@@ -202,10 +220,22 @@
       authenticated = false;
       loginError = err.message;
       error = err.message;
+      triggerLoginFailureReaction();
       showErrorAlert(err.message, 'Sign in failed');
     } finally {
       loginLoading = false;
     }
+  }
+
+  function triggerLoginFailureReaction() {
+    if (loginReactionTimer) {
+      window.clearTimeout(loginReactionTimer);
+    }
+    loginFailedReaction = true;
+    loginReactionTimer = window.setTimeout(() => {
+      loginFailedReaction = false;
+      loginReactionTimer = null;
+    }, 1800);
   }
 
   function logout() {
@@ -221,12 +251,13 @@
     loading = true;
     error = '';
     try {
-      const [nextVersion, nextStatus, nextServices, nextSystemd, nextNetwork, nextPackages, nextOllama, nextHistory] = await Promise.all([
+      const [nextVersion, nextStatus, nextServices, nextSystemd, nextNetwork, nextFirewall, nextPackages, nextOllama, nextHistory] = await Promise.all([
         api('/api2/json/version'),
         api('/api2/json/nodes/localhost/status'),
         api('/api2/json/nodes/localhost/services'),
         api('/api2/json/nodes/localhost/systemd/status'),
         api('/api2/json/nodes/localhost/network/status'),
+        api('/api2/json/nodes/localhost/firewall/status'),
         api('/api2/json/nodes/localhost/packages/status'),
         api('/api2/json/nodes/localhost/ollama/status'),
         api('/api2/json/nodes/localhost/ollama/history?limit=120')
@@ -245,6 +276,8 @@
       permissionOptions = nextPermissions || permissionOptions;
       network = withNetworkRates(nextNetwork);
       networkDraft = clone(nextNetwork?.config);
+      firewall = nextFirewall;
+      firewallDraft = normalizeFirewallDraft(nextFirewall?.config);
       aptState = nextPackages;
       ollama = nextOllama;
       history = nextHistory || [];
@@ -353,6 +386,131 @@
     } catch (err) {
       handleAPIError(err);
     }
+  }
+
+  function defaultFirewallRule() {
+    return {
+      name: '',
+      enabled: true,
+      direction: 'in',
+      action: 'accept',
+      protocol: 'tcp',
+      port: '',
+      source: '',
+      destination: '',
+      comment: ''
+    };
+  }
+
+  function normalizeFirewallRule(rule = {}) {
+    return {
+      name: rule.name || '',
+      enabled: rule.enabled !== false,
+      direction: rule.direction || 'in',
+      action: rule.action || 'accept',
+      protocol: rule.protocol || 'tcp',
+      port: rule.port || '',
+      source: rule.source || '',
+      destination: rule.destination || '',
+      comment: rule.comment || ''
+    };
+  }
+
+  function normalizeFirewallDraft(config = {}) {
+    return {
+      enabled: !!config.enabled,
+      defaultIncoming: config.defaultIncoming || 'drop',
+      defaultOutgoing: config.defaultOutgoing || 'accept',
+      allowEstablished: config.allowEstablished !== false,
+      allowLoopback: config.allowLoopback !== false,
+      allowPing: config.allowPing !== false,
+      rules: (config.rules || []).map(normalizeFirewallRule)
+    };
+  }
+
+  async function refreshFirewallState() {
+    firewallLoading = true;
+    try {
+      firewall = await api('/api2/json/nodes/localhost/firewall/status');
+      firewallDraft = normalizeFirewallDraft(firewall?.config);
+      savedAt = new Date().toLocaleTimeString();
+      pushConsole('info', 'firewall state refreshed');
+    } catch (err) {
+      handleAPIError(err);
+    } finally {
+      firewallLoading = false;
+    }
+  }
+
+  async function submitFirewall(dryRun, apply) {
+    if (!firewallDraft || firewallLoading) return;
+    firewallLoading = true;
+    try {
+      const result = await postJSON('/api2/json/nodes/localhost/firewall/config', {
+        ...firewallDraft,
+        dryRun,
+        apply
+      });
+      firewall = {
+        ...(firewall || {}),
+        config: result.config,
+        rendered: result.rendered,
+        ruleCount: result.config?.rules?.length || 0
+      };
+      firewallDraft = normalizeFirewallDraft(result.config);
+      pushConsole(dryRun ? 'warn' : 'info', `firewall ${dryRun ? 'previewed' : 'saved'} rules=${firewallDraft.rules.length}`);
+      if (result.applyResult) {
+        const level = result.applyResult.status === 'failed' || result.applyResult.status === 'missing' ? 'error' : 'info';
+        pushConsole(level, `firewall apply ${result.applyResult.status}`);
+        if (level === 'error') {
+          showErrorAlert(result.applyResult.error || 'firewall apply failed', 'Firewall');
+        }
+      }
+      await refreshFirewallState();
+    } catch (err) {
+      handleAPIError(err);
+    } finally {
+      firewallLoading = false;
+    }
+  }
+
+  async function applyFirewallOnly(dryRun) {
+    if (firewallLoading) return;
+    firewallLoading = true;
+    try {
+      const result = await postJSON('/api2/json/nodes/localhost/firewall/apply', { dryRun });
+      const level = result.status === 'failed' || result.status === 'missing' ? 'error' : dryRun ? 'warn' : 'info';
+      pushConsole(level, `firewall apply ${result.status}`);
+      if (level === 'error') {
+        showErrorAlert(result.error || 'firewall apply failed', 'Firewall');
+      }
+      await refreshFirewallState();
+    } catch (err) {
+      handleAPIError(err);
+    } finally {
+      firewallLoading = false;
+    }
+  }
+
+  function addFirewallRule() {
+    if (!firewallDraft) return;
+    const nextRule = normalizeFirewallRule(firewallRuleDraft);
+    if (!nextRule.name.trim()) {
+      nextRule.name = `${nextRule.protocol || 'rule'}-${nextRule.port || firewallDraft.rules.length + 1}`;
+    }
+    firewallDraft = {
+      ...firewallDraft,
+      rules: [...firewallDraft.rules, nextRule]
+    };
+    firewallRuleDraft = defaultFirewallRule();
+  }
+
+  function removeFirewallRule(index) {
+    if (!firewallDraft) return;
+    firewallDraft = {
+      ...firewallDraft,
+      rules: firewallDraft.rules.filter((_, ruleIndex) => ruleIndex !== index)
+    };
   }
 
   async function refreshAptState() {
@@ -540,7 +698,10 @@
     modelPulling = name;
     try {
       const result = await postJSON('/api2/json/nodes/localhost/ollama/models/pull', { model: name });
-      pushConsole('info', `ollama pull ${result.model}: ${result.status}`);
+      if (result.readiness?.serviceStart?.status) {
+        pushConsole('info', `ollama.service ${result.readiness.serviceStart.status}`);
+      }
+      pushConsole(result.installed ? 'info' : 'warn', `ollama install ${result.model}: ${result.status}`);
       if (result.ollama) {
         ollama = result.ollama;
       }
@@ -592,47 +753,77 @@
     const command = consoleCommand.trim();
     if (!command || consoleRunning) return;
     const cwd = consoleCwd.trim() || '/';
+    const entryID = nextTerminalEntryID;
+    const runID = createConsoleRunID(entryID);
+    nextTerminalEntryID += 1;
     consoleCommand = '';
+    terminalEntries = [
+      ...terminalEntries,
+      {
+        id: entryID,
+        runID,
+        at: new Date().toLocaleTimeString(),
+        command,
+        cwd,
+        cancelled: false,
+        exitCode: null,
+        stderr: '',
+        stdout: '',
+        stopped: false,
+        timedOut: false,
+        pending: true
+      }
+    ].slice(-20);
+    await scrollTerminalToBottom();
     consoleRunning = true;
-    startConsoleProgress(command, cwd);
+    consoleStopping = false;
+    activeConsoleRunID = runID;
+    startConsoleProgress(command, cwd, runID);
     try {
-      const result = await runTerminalCommand(command, cwd);
-      terminalEntries = [
-        ...terminalEntries,
-        {
-          at: new Date().toLocaleTimeString(),
-          ...result
-        }
-      ].slice(-20);
-      pushConsole(result.exitCode === 0 ? 'info' : 'warn', `command exited ${result.exitCode}: ${command}`);
+      const result = await runTerminalCommand(command, cwd, runID);
+      terminalEntries = terminalEntries.map((entry) => (
+        entry.id === entryID
+          ? { ...entry, ...result, pending: false }
+          : entry
+      ));
+      const resultLabel = result.stopped
+        ? 'command stopped'
+        : result.timedOut
+          ? 'command timed out'
+          : `command exited ${result.exitCode}`;
+      pushConsole(result.exitCode === 0 && !result.stopped && !result.timedOut ? 'info' : 'warn', `${resultLabel}: ${command}`);
       await scrollTerminalToBottom();
     } catch (err) {
-      terminalEntries = [
-        ...terminalEntries,
-        {
-          at: new Date().toLocaleTimeString(),
-          command,
-          cwd,
-          exitCode: -1,
-          stderr: err.message,
-          stdout: '',
-          timedOut: false
-        }
-      ].slice(-20);
+      terminalEntries = terminalEntries.map((entry) => (
+        entry.id === entryID
+          ? {
+              ...entry,
+              cancelled: false,
+              exitCode: -1,
+              stderr: err.message,
+              stdout: '',
+              stopped: false,
+              timedOut: false,
+              pending: false
+            }
+          : entry
+      ));
       handleAPIError(err);
       await scrollTerminalToBottom();
     } finally {
       stopConsoleProgress();
       consoleRunning = false;
+      consoleStopping = false;
+      activeConsoleRunID = '';
       focusTerminalInput();
     }
   }
 
-  async function runTerminalCommand(command, cwd) {
+  async function runTerminalCommand(command, cwd, runID) {
     if (isChangeDirectoryCommand(command)) {
-      return changeTerminalDirectory(command, cwd);
+      return changeTerminalDirectory(command, cwd, runID);
     }
-    return postJSON('/api2/json/nodes/localhost/console/exec', { command, cwd });
+    return postJSON('/api2/json/nodes/localhost/console/exec', { command, cwd, runID });
   }
 
   function isChangeDirectoryCommand(command) {
@@ -640,11 +831,12 @@
     return !/[;&|<>`$()]/.test(command.slice(2));
   }
 
-  async function changeTerminalDirectory(command, cwd) {
+  async function changeTerminalDirectory(command, cwd, runID) {
     const target = command === 'cd' ? '~' : command.slice(2).trim() || '~';
     const result = await postJSON('/api2/json/nodes/localhost/console/exec', {
       command: `cd ${target} && pwd -P`,
-      cwd
+      cwd,
+      runID
     });
     if (result.exitCode === 0) {
       const nextCwd = String(result.stdout || '').trim().split('\n').filter(Boolean).pop();
@@ -656,8 +848,44 @@
     return { ...result, command, cwd };
   }
 
+  async function stopActiveConsoleCommand() {
+    if (!consoleRunning || !activeConsoleRunID || consoleStopping) return;
+    const runID = activeConsoleRunID;
+    const command = activeConsoleCommand?.command || runID;
+    consoleStopping = true;
+    try {
+      const result = await postJSON('/api2/json/nodes/localhost/console/stop', { runID });
+      if (result.stopped) {
+        pushConsole('warn', `command stop requested: ${command}`);
+      } else {
+        consoleStopping = false;
+        pushConsole('warn', `no active command found to stop: ${command}`);
+      }
+    } catch (err) {
+      consoleStopping = false;
+      handleAPIError(err);
+    }
+  }
+
+  function createConsoleRunID(entryID) {
+    return `console-${Date.now()}-${entryID}`;
+  }
+
   function focusTerminalInput() {
     window.setTimeout(() => terminalInput?.focus(), 0);
+  }
+
+  function focusTerminalOnClick(node) {
+    function handleClick() {
+      focusTerminalInput();
+    }
+
+    node.addEventListener('click', handleClick);
+    return {
+      destroy() {
+        node.removeEventListener('click', handleClick);
+      }
+    };
   }
 
   async function scrollTerminalToBottom() {
@@ -667,13 +895,14 @@
     }
   }
 
-  function startConsoleProgress(command, cwd) {
+  function startConsoleProgress(command, cwd, runID) {
     stopConsoleProgress();
     const startedAt = Date.now();
     activeConsoleCommand = {
       command,
       cwd,
       at: new Date(startedAt).toLocaleTimeString(),
+      runID,
       startedAt
     };
     consoleElapsedMillis = 0;
@@ -765,11 +994,19 @@
     newUser = { ...newUser, permissions: orderedPermissionIDs(selected) };
   }
 
+  function isCurrentUser(username) {
+    return username === session?.username;
+  }
+
+  function canEditAccount(username) {
+    return canManageUsers || isCurrentUser(username);
+  }
+
   function beginEditUser(user) {
     userError = '';
-    if (!canManageUsers) {
+    if (!canEditAccount(user.username)) {
       editingUsername = '';
-      setUserError('권한 부족: root 계정만 사용자 비밀번호와 권한을 수정할 수 있습니다.');
+      setUserError('권한 부족: root 계정이 아니면 자기 계정만 수정할 수 있습니다.');
       return;
     }
     showAddUser = false;
@@ -795,6 +1032,17 @@
       selected.delete(id);
     }
     userEditDraft = { ...userEditDraft, permissions: orderedPermissionIDs(selected) };
+  }
+
+  function editUserSaveDisabled() {
+    if (userLoading) return true;
+    const password = userEditDraft.password;
+    const passwordInvalid = !!password && (password.length < 8 || password !== userEditDraft.confirm);
+    if (passwordInvalid) return true;
+    if (!canManageUsers) {
+      return !password;
+    }
+    return false;
   }
 
   async function createUser() {
@@ -829,12 +1077,16 @@
 
   async function updateUser() {
     userError = '';
-    if (!canManageUsers) {
-      setUserError('only root can manage users');
+    if (!canEditAccount(userEditDraft.username)) {
+      setUserError('권한 부족: root 계정이 아니면 자기 계정만 수정할 수 있습니다.');
       return;
     }
     if (!userEditDraft.username) return;
     const password = userEditDraft.password;
+    if (!canManageUsers && !password) {
+      setUserError('변경할 비밀번호를 입력하세요.');
+      return;
+    }
     if (password || userEditDraft.confirm) {
       if (password !== userEditDraft.confirm) {
         setUserError('password confirmation does not match');
@@ -848,9 +1100,11 @@
     userLoading = true;
     try {
       const body = {
-        username: userEditDraft.username,
-        permissions: userEditDraft.permissions
+        username: userEditDraft.username
       };
+      if (canManageUsers) {
+        body.permissions = userEditDraft.permissions;
+      }
       if (password) {
         body.password = password;
       }
@@ -998,6 +1252,8 @@
   $: os = status?.os || {};
   $: controlPlane = status?.controlPlane || {};
   $: systemdSummary = systemd?.summary || {};
+  $: terminalUser = session?.username || 'root';
+  $: terminalHost = os.hostname || 'localhost';
   $: installedAptPackages = aptState?.packages || [];
   $: aptTools = aptState?.tools || {};
   $: aptSearchPageCount = Math.max(1, Math.ceil(aptSearchResults.length / aptSearchPageSize));
@@ -1007,11 +1263,27 @@
   $: aptSearchEndIndex = Math.min(aptSearchStartIndex + aptSearchPageSize, aptSearchResults.length);
   $: paginatedAptSearchResults = aptSearchResults.slice(aptSearchStartIndex, aptSearchEndIndex);
   $: aptSearchPageNumbers = Array.from({ length: aptSearchPageCount }, (_, index) => index + 1);
+  $: firewallConfig = firewall?.config || {};
+  $: firewallTools = firewall?.tools || {};
+  $: firewallService = firewall?.service || {};
+  $: firewallRules = firewallDraft?.rules || [];
+  $: enabledFirewallRules = firewallRules.filter((rule) => rule.enabled !== false);
+  $: acceptedFirewallRules = enabledFirewallRules.filter((rule) => rule.action === 'accept');
+  $: blockedFirewallRules = enabledFirewallRules.filter((rule) => rule.action === 'drop' || rule.action === 'reject');
+  $: firewallDraftEnabled = firewallDraft?.enabled ?? firewallConfig.enabled;
+  $: firewallDefaultIncoming = firewallDraft?.defaultIncoming || firewallConfig.defaultIncoming || 'drop';
+  $: firewallDefaultOutgoing = firewallDraft?.defaultOutgoing || firewallConfig.defaultOutgoing || 'accept';
+  $: firewallGuardState = !firewallDraftEnabled ? 'disabled' : firewallDefaultIncoming === 'accept' ? 'open' : 'guarded';
+  $: firewallGuardLabel = firewallGuardState === 'disabled' ? 'Disabled' : firewallGuardState === 'open' ? 'Open ingress' : 'Guarded';
   $: kv = ollama?.kvCache || {};
   $: downloadedModels = ollama?.models || [];
   $: loadedModels = ollama?.loadedModels || [];
   $: loadedModelNameSet = new Set(loadedModels.flatMap((model) => [...modelNameAliases(model.model), ...modelNameAliases(model.name)]));
   $: installedModelNameSet = new Set(downloadedModels.flatMap((model) => modelNameAliases(model.name)));
+  $: ollamaHeroState = ollama?.apiReachable ? 'api-online' : ollama?.service?.state || ollama?.platform?.state || 'unknown';
+  $: ollamaHeroLabel = ollama?.apiReachable ? 'API online' : ollama?.service?.state || ollama?.platform?.state || 'Unknown';
+  $: ollamaInstalledCount = ollama?.platform?.modelCount || downloadedModels.length;
+  $: ollamaLoadedCount = ollama?.platform?.loadedModelCount || loadedModels.length;
   $: cpuReady = cpu.state === 'ready' || hasFiniteNumber(cpu.usedPercent);
   $: cpuUsedPercent = clampPercent(cpu.usedPercent);
   $: cpuGaugePercent = visibleGaugePercent(cpu.usedPercent, cpuReady);
@@ -1019,6 +1291,7 @@
   $: memoryUsedPercent = ratioPercent(memory.used, memory.total);
   $: swapUsedPercent = ratioPercent(swap.used, swap.total);
   $: canManageUsers = !!session?.canManageUsers || session?.username === 'root';
+  $: canEditDraftUser = !!editingUsername && (canManageUsers || editingUsername === session?.username);
 
   onMount(() => {
     if (authenticated) {
@@ -1027,6 +1300,9 @@
     const interval = window.setInterval(refreshLive, 2000);
     return () => {
       window.clearInterval(interval);
+      if (loginReactionTimer) {
+        window.clearTimeout(loginReactionTimer);
+      }
       stopConsoleProgress();
     };
   });
@@ -1045,6 +1321,16 @@
         <small>{version.stack}</small>
       {/if}
     </div>
+    {#if authenticated}
+      <nav class="top-nav" aria-label="Primary navigation">
+        {#each tabs as tab}
+          <button class:active={activeTab === tab.id} class="nav-item" on:click={() => (activeTab = tab.id)}>
+            <svelte:component this={tab.icon} size={16} />
+            <span>{tab.label}</span>
+          </button>
+        {/each}
+      </nav>
+    {/if}
     <div class="top-actions">
       {#if authenticated}
         <span class="session-user">
@@ -1100,11 +1386,22 @@
         </div>
         <label>
           <span>Username</span>
-          <input bind:value={loginUsername} autocomplete="username" />
+          <input
+            bind:value={loginUsername}
+            autocomplete="username"
+            on:focus={() => (loginFocusedField = 'username')}
+            on:blur={() => (loginFocusedField = '')}
+          />
         </label>
         <label>
           <span>Password</span>
-          <input type="password" bind:value={loginPassword} autocomplete="current-password" />
+          <input
+            type="password"
+            bind:value={loginPassword}
+            autocomplete="current-password"
+            on:focus={() => (loginFocusedField = 'password')}
+            on:blur={() => (loginFocusedField = '')}
+          />
         </label>
         {#if loginError}
           <div class="notice login-error">
@@ -1117,22 +1414,26 @@
           Sign in
         </button>
       </form>
+      <div class="login-ambient" aria-hidden="true">
+        <div
+          class="login-character"
+          class:watching-form={!!loginFocusedField}
+          class:privacy-mode={loginFocusedField === 'password'}
+          class:error-reaction={loginFailedReaction}
+        >
+          <div class="character-head">
+            <div class="character-face">
+              <span></span>
+              <span></span>
+            </div>
+          </div>
+          <div class="character-body"></div>
+          <div class="character-base"></div>
+        </div>
+      </div>
     </main>
   {:else}
   <div class="workspace">
-    <aside class="sidebar">
-      <div class="node-block">
-        <strong>{os.hostname || 'localhost'}</strong>
-        <span>{os.prettyName || 'Dionysus target OS'}</span>
-      </div>
-      {#each tabs as tab}
-        <button class:active={activeTab === tab.id} class="nav-item" on:click={() => (activeTab = tab.id)}>
-          <svelte:component this={tab.icon} size={16} />
-          <span>{tab.label}</span>
-        </button>
-      {/each}
-    </aside>
-
     <main class="content">
       <div class="status-strip">
         <div>
@@ -1166,6 +1467,7 @@
             <h2>Node</h2>
             <dl class="facts">
               <div><dt>Hostname</dt><dd>{os.hostname || '-'}</dd></div>
+              <div><dt>OS</dt><dd>{os.prettyName || os.name || 'Dionysus target OS'}</dd></div>
               <div><dt>Kernel</dt><dd>{os.kernel?.name || '-'} {os.kernel?.release || ''}</dd></div>
               <div><dt>Architecture</dt><dd>{os.kernel?.architecture || '-'}</dd></div>
               <div><dt>Uptime</dt><dd>{formatSeconds(status?.uptime)}</dd></div>
@@ -1233,6 +1535,27 @@
             </div>
           </article>
 
+          <article class="panel">
+            <h2>Operations</h2>
+            <dl class="facts">
+              <div><dt>Firewall</dt><dd><span class={stateClass(firewallConfig.enabled ? 'active' : firewallService.state)}>{firewallConfig.enabled ? 'enabled' : firewallService.state || 'unknown'}</span></dd></div>
+              <div><dt>Packages</dt><dd>{aptState?.installedCount ?? installedAptPackages.length} installed</dd></div>
+              <div><dt>Ollama API</dt><dd><span class={stateClass(ollama?.apiReachable ? 'active' : ollama?.service?.state)}>{ollama?.apiStatus || ollama?.service?.state || 'unknown'}</span></dd></div>
+              <div><dt>Services</dt><dd>{services.length} tracked</dd></div>
+              <div><dt>Console</dt><dd><span class={session?.permissions?.includes('console.run') || canManageUsers ? 'ok' : 'warn'}>{session?.permissions?.includes('console.run') || canManageUsers ? 'available' : 'restricted'}</span></dd></div>
+            </dl>
+            <div class="button-row">
+              <button class="primary" on:click={() => (activeTab = 'console')}>
+                <Database size={15} />
+                Open Console
+              </button>
+              <button on:click={() => (activeTab = 'systemd')}>
+                <Activity size={15} />
+                View Systemd
+              </button>
+            </div>
+          </article>
+
           <article class="panel wide">
             <h2>Control Plane Paths</h2>
             <table>
@@ -1240,6 +1563,8 @@
                 <tr><th>Web root</th><td>{controlPlane.wwwRoot || '-'}</td></tr>
                 <tr><th>Metrics DB</th><td>{controlPlane.metricsDb || '-'}</td></tr>
                 <tr><th>Network config</th><td>{controlPlane.networkConfig || '-'}</td></tr>
+                <tr><th>Firewall config</th><td>{firewallConfig.path || '-'}</td></tr>
+                <tr><th>Ollama API</th><td>{ollama?.apiBase || '-'}</td></tr>
               </tbody>
             </table>
           </article>
@@ -1381,6 +1706,287 @@
               <button on:click={() => applyNetworkOnly(false)}><Play size={15} />Restart Network</button>
             </div>
           </article>
+        </section>
+      {:else if activeTab === 'firewall'}
+        <section class="firewall-console">
+          <div class="firewall-hero">
+            <div class="firewall-hero-main">
+              <span class="section-kicker">Security / Host firewall</span>
+              <div class="firewall-hero-title">
+                <Shield size={26} />
+                <div>
+                  <h1>Firewall Policy</h1>
+                  <p>{firewallConfig.path || 'nftables policy'}</p>
+                </div>
+              </div>
+              <div class="firewall-summary-grid">
+                <div class={`metric-card ${firewallGuardState}`}>
+                  <span>Policy</span>
+                  <strong>{firewallGuardLabel}</strong>
+                </div>
+                <div class="metric-card">
+                  <span>Default incoming</span>
+                  <strong>{firewallDefaultIncoming}</strong>
+                </div>
+                <div class="metric-card">
+                  <span>Default outgoing</span>
+                  <strong>{firewallDefaultOutgoing}</strong>
+                </div>
+                <div class="metric-card">
+                  <span>Managed rules</span>
+                  <strong>{enabledFirewallRules.length}/{firewallRules.length}</strong>
+                </div>
+              </div>
+            </div>
+
+            <div class="firewall-companion" aria-hidden="true">
+              <div class="login-character firewall-guardian">
+                <div class="character-head">
+                  <div class="character-face">
+                    <span></span>
+                    <span></span>
+                  </div>
+                </div>
+                <div class="character-body"></div>
+                <div class="character-shield">
+                  <Shield size={38} />
+                </div>
+                <div class="character-base"></div>
+              </div>
+            </div>
+          </div>
+
+          {#if firewallConfig.error}
+            <div class="notice firewall-notice">
+              <AlertTriangle size={16} />
+              <span>{firewallConfig.error}</span>
+            </div>
+          {/if}
+
+          <div class="firewall-layout">
+            <article class="panel firewall-policy-panel">
+              <div class="panel-title">
+                <h2>Policy defaults</h2>
+                <button on:click={refreshFirewallState} disabled={firewallLoading || loading} title="Refresh firewall state">
+                  <RefreshCw size={15} class={firewallLoading ? 'spin' : ''} />
+                  Refresh
+                </button>
+              </div>
+              {#if firewallDraft}
+                <div class="policy-flow">
+                  <div class="policy-node">
+                    <span>Ingress fallback</span>
+                    <strong>{firewallDraft.defaultIncoming}</strong>
+                  </div>
+                  <div class="policy-node">
+                    <span>Rule match</span>
+                    <strong>{acceptedFirewallRules.length} allow / {blockedFirewallRules.length} block</strong>
+                  </div>
+                  <div class="policy-node">
+                    <span>Egress fallback</span>
+                    <strong>{firewallDraft.defaultOutgoing}</strong>
+                  </div>
+                </div>
+                <div class="form-grid firewall-policy-grid">
+                  <label class="checkbox-row">
+                    <input type="checkbox" bind:checked={firewallDraft.enabled} />
+                    <span>Enabled</span>
+                  </label>
+                  <label>Default incoming
+                    <select bind:value={firewallDraft.defaultIncoming}>
+                      <option value="drop">Drop</option>
+                      <option value="reject">Reject</option>
+                      <option value="accept">Accept</option>
+                    </select>
+                  </label>
+                  <label>Default outgoing
+                    <select bind:value={firewallDraft.defaultOutgoing}>
+                      <option value="accept">Accept</option>
+                      <option value="drop">Drop</option>
+                      <option value="reject">Reject</option>
+                    </select>
+                  </label>
+                  <label class="checkbox-row">
+                    <input type="checkbox" bind:checked={firewallDraft.allowEstablished} />
+                    <span>Established</span>
+                  </label>
+                  <label class="checkbox-row">
+                    <input type="checkbox" bind:checked={firewallDraft.allowLoopback} />
+                    <span>Loopback</span>
+                  </label>
+                  <label class="checkbox-row">
+                    <input type="checkbox" bind:checked={firewallDraft.allowPing} />
+                    <span>ICMP ping</span>
+                  </label>
+                </div>
+                <div class="button-row">
+                  <button on:click={() => submitFirewall(true, false)} disabled={firewallLoading}>
+                    <Settings size={15} />
+                    Preview
+                  </button>
+                  <button on:click={() => submitFirewall(false, false)} disabled={firewallLoading}>
+                    <Save size={15} />
+                    Save
+                  </button>
+                  <button class="primary" on:click={() => submitFirewall(false, true)} disabled={firewallLoading}>
+                    <Play size={15} />
+                    Save and Apply
+                  </button>
+                </div>
+              {:else}
+                <p class="muted">No firewall policy loaded.</p>
+              {/if}
+            </article>
+
+            <article class="panel firewall-runtime-panel">
+              <h2>Runtime</h2>
+              <dl class="facts">
+                <div><dt>Config</dt><dd>{firewallConfig.path || '-'}</dd></div>
+                <div><dt>Saved</dt><dd><span class={firewallConfig.exists ? 'ok' : 'warn'}>{firewallConfig.exists ? 'yes' : 'default'}</span></dd></div>
+                <div><dt>State</dt><dd><span class={firewallConfig.enabled ? 'ok' : 'warn'}>{firewallConfig.enabled ? 'enabled' : 'disabled'}</span></dd></div>
+                <div><dt>Service</dt><dd><span class={stateClass(firewallService.state)}>{firewallService.state || 'unknown'}</span></dd></div>
+                <div><dt>nft</dt><dd><span class={firewallTools.nft ? 'ok' : 'bad'}>{firewallTools.nft ? 'available' : 'missing'}</span></dd></div>
+                <div><dt>Rules</dt><dd>{firewall?.ruleCount ?? firewallRules.length}</dd></div>
+              </dl>
+              <div class="button-row">
+                <button on:click={() => applyFirewallOnly(true)} disabled={firewallLoading}>
+                  <Settings size={15} />
+                  Preview Apply
+                </button>
+                <button on:click={() => applyFirewallOnly(false)} disabled={firewallLoading || !firewallTools.nft}>
+                  <Play size={15} />
+                  Apply Saved
+                </button>
+              </div>
+            </article>
+          </div>
+
+          <article class="panel firewall-rules-panel">
+            <div class="panel-title">
+              <h2>Managed rules</h2>
+              <span class="model-source">{firewallRules.length} rules</span>
+            </div>
+            {#if firewallDraft}
+              <form class="firewall-rule-form" on:submit|preventDefault={addFirewallRule}>
+                <label>
+                  <span>Name</span>
+                  <input bind:value={firewallRuleDraft.name} placeholder="ssh" />
+                </label>
+                <label>
+                  <span>Direction</span>
+                  <select bind:value={firewallRuleDraft.direction}>
+                    <option value="in">In</option>
+                    <option value="out">Out</option>
+                  </select>
+                </label>
+                <label>
+                  <span>Action</span>
+                  <select bind:value={firewallRuleDraft.action}>
+                    <option value="accept">Accept</option>
+                    <option value="drop">Drop</option>
+                    <option value="reject">Reject</option>
+                  </select>
+                </label>
+                <label>
+                  <span>Protocol</span>
+                  <select bind:value={firewallRuleDraft.protocol}>
+                    <option value="tcp">TCP</option>
+                    <option value="udp">UDP</option>
+                    <option value="icmp">ICMP</option>
+                    <option value="any">Any</option>
+                  </select>
+                </label>
+                <label>
+                  <span>Port</span>
+                  <input bind:value={firewallRuleDraft.port} placeholder="22 or 80,443" />
+                </label>
+                <label>
+                  <span>Source</span>
+                  <input bind:value={firewallRuleDraft.source} placeholder="0.0.0.0/0" />
+                </label>
+                <label>
+                  <span>Destination</span>
+                  <input bind:value={firewallRuleDraft.destination} placeholder="10.0.0.10" />
+                </label>
+                <button class="primary" type="submit" disabled={firewallLoading}>
+                  <Plus size={15} />
+                  Add
+                </button>
+              </form>
+              <div class="table-scroll">
+                <table class="firewall-table">
+                  <thead><tr><th>On</th><th>Name</th><th>Dir</th><th>Action</th><th>Proto</th><th>Port</th><th>Source</th><th>Destination</th><th></th></tr></thead>
+                  <tbody>
+                    {#if firewallRules.length === 0}
+                      <tr><td class="table-empty" colspan="9">No managed firewall rules</td></tr>
+                    {:else}
+                      {#each firewallRules as rule, index}
+                        <tr>
+                          <td class="check-cell"><input type="checkbox" bind:checked={rule.enabled} title="Toggle rule" /></td>
+                          <td><input bind:value={rule.name} /></td>
+                          <td>
+                            <select bind:value={rule.direction}>
+                              <option value="in">In</option>
+                              <option value="out">Out</option>
+                            </select>
+                          </td>
+                          <td>
+                            <select bind:value={rule.action}>
+                              <option value="accept">Accept</option>
+                              <option value="drop">Drop</option>
+                              <option value="reject">Reject</option>
+                            </select>
+                          </td>
+                          <td>
+                            <select bind:value={rule.protocol}>
+                              <option value="tcp">TCP</option>
+                              <option value="udp">UDP</option>
+                              <option value="icmp">ICMP</option>
+                              <option value="any">Any</option>
+                            </select>
+                          </td>
+                          <td><input bind:value={rule.port} placeholder="22" /></td>
+                          <td><input bind:value={rule.source} placeholder="0.0.0.0/0" /></td>
+                          <td><input bind:value={rule.destination} placeholder="10.0.0.10" /></td>
+                          <td>
+                            <button on:click={() => removeFirewallRule(index)} disabled={firewallLoading} title="Delete rule">
+                              <Trash2 size={15} />
+                            </button>
+                          </td>
+                        </tr>
+                      {/each}
+                    {/if}
+                  </tbody>
+                </table>
+              </div>
+            {/if}
+          </article>
+
+          <div class="firewall-output-grid">
+            <article class="panel">
+              <h2>Rendered nftables config</h2>
+              <div class="command-output firewall-output">
+                {#if firewall?.rendered}
+                  <pre>{firewall.rendered}</pre>
+                {:else}
+                  <span>No rendered firewall config loaded.</span>
+                {/if}
+              </div>
+            </article>
+
+            <article class="panel">
+              <h2>Active ruleset</h2>
+              <div class="command-output firewall-output">
+                {#if firewall?.activeRuleset?.stdout}
+                  <pre>{firewall.activeRuleset.stdout}{firewall.activeRuleset.truncated ? '\n[stdout truncated]' : ''}</pre>
+                {:else if firewall?.activeRuleset?.error}
+                  <pre class="stderr">{firewall.activeRuleset.error}</pre>
+                {:else}
+                  <span>{firewall?.activeRuleset?.available === false ? 'nft command is unavailable.' : 'No active ruleset output loaded.'}</span>
+                {/if}
+              </div>
+            </article>
+          </div>
         </section>
       {:else if activeTab === 'packages'}
         <section class="grid two">
@@ -1530,7 +2136,55 @@
           </article>
         </section>
       {:else if activeTab === 'llm'}
-        <section class="grid two">
+        <section class="llm-console">
+          <div class="firewall-hero llm-hero">
+            <div class="firewall-hero-main">
+              <span class="section-kicker">Local LLM / Ollama</span>
+              <div class="firewall-hero-title">
+                <Cpu size={26} />
+                <div>
+                  <h1>Ollama Runtime</h1>
+                  <p>{ollama?.apiBase || 'local model server'}</p>
+                </div>
+              </div>
+              <div class="firewall-summary-grid">
+                <div class={`metric-card ${ollama?.apiReachable ? 'guarded' : 'disabled'}`}>
+                  <span>Runtime</span>
+                  <strong>{ollamaHeroLabel}</strong>
+                </div>
+                <div class="metric-card">
+                  <span>Service</span>
+                  <strong>{ollama?.service?.state || 'unknown'}</strong>
+                </div>
+                <div class="metric-card">
+                  <span>Installed</span>
+                  <strong>{ollamaInstalledCount}</strong>
+                </div>
+                <div class="metric-card">
+                  <span>Loaded</span>
+                  <strong>{ollamaLoadedCount}</strong>
+                </div>
+              </div>
+            </div>
+
+            <div class="firewall-companion llm-companion" aria-hidden="true">
+              <div class="login-character llm-guide" class:watching-form={ollama?.apiReachable} class:privacy-mode={ollamaLoadedCount > 0}>
+                <div class="character-head">
+                  <div class="character-face">
+                    <span></span>
+                    <span></span>
+                  </div>
+                </div>
+                <div class="character-body"></div>
+                <div class={`llm-core ${ollamaHeroState === 'api-online' ? 'online' : ''}`}>
+                  <Cpu size={38} />
+                </div>
+                <div class="character-base"></div>
+              </div>
+            </div>
+          </div>
+
+          <div class="grid two">
           <article class="panel">
             <div class="panel-title">
               <h2>Ollama</h2>
@@ -1574,7 +2228,7 @@
 
           <article class="panel wide">
             <div class="panel-title">
-              <h2>Downloaded Models</h2>
+              <h2>Installed Models</h2>
               <button on:click={refreshOllamaState} disabled={loading || liveLoading} title="Refresh Ollama state">
                 <RefreshCw size={15} />
                 Refresh
@@ -1584,7 +2238,7 @@
               <thead><tr><th>Model</th><th>Runtime</th><th>Size</th><th>Details</th><th>Modified</th><th>Actions</th></tr></thead>
               <tbody>
                 {#if downloadedModels.length === 0}
-                  <tr><td class="table-empty" colspan="6">No downloaded models</td></tr>
+                  <tr><td class="table-empty" colspan="6">No installed models</td></tr>
                 {:else}
                   {#each downloadedModels as model (model.name)}
                     <tr>
@@ -1633,9 +2287,9 @@
                 <Search size={15} class={modelSearchLoading ? 'spin' : ''} />
                 Search
               </button>
-              <button type="button" on:click={() => pullOllamaModel(modelSearchQuery)} disabled={!ollama?.apiReachable || !modelSearchQuery.trim() || !!modelPulling}>
+              <button type="button" on:click={() => pullOllamaModel(modelSearchQuery)} disabled={!modelSearchQuery.trim() || !!modelPulling}>
                 <Download size={15} />
-                Download
+                Install
               </button>
             </form>
             {#if modelSearchWarning}
@@ -1659,7 +2313,7 @@
                       <td>{result.source || '-'}</td>
                       <td>
                         {#if modelNameInSet(result.pullName || result.name, installedModelNameSet)}
-                          <span class="ok">downloaded</span>
+                          <span class="ok">installed</span>
                         {:else}
                           <span class="warn">not installed</span>
                         {/if}
@@ -1668,9 +2322,9 @@
                         {/if}
                       </td>
                       <td>
-                        <button on:click={() => pullOllamaModel(result.pullName || result.name)} disabled={!ollama?.apiReachable || !!modelPulling} title="Download model">
+                        <button on:click={() => pullOllamaModel(result.pullName || result.name)} disabled={!!modelPulling} title="Install model">
                           <Download size={15} />
-                          {modelPulling === (result.pullName || result.name) ? 'Downloading' : 'Download'}
+                          {modelPulling === (result.pullName || result.name) ? 'Installing' : 'Install'}
                         </button>
                       </td>
                     </tr>
@@ -1715,6 +2369,7 @@
               </tbody>
             </table>
           </article>
+          </div>
         </section>
       {:else if activeTab === 'users'}
         <section class="grid two">
@@ -1729,7 +2384,7 @@
             {#if !canManageUsers}
               <div class="notice user-notice">
                 <Shield size={16} />
-                <span>Only root can add users, edit user information, or change permissions.</span>
+                <span>Only root can add users, edit other users, or change permissions. You can edit your own password.</span>
               </div>
             {/if}
             {#if userError}
@@ -1828,7 +2483,7 @@
             </div>
           </div>
         {/if}
-        {#if editingUsername && canManageUsers}
+        {#if editingUsername && canEditDraftUser}
           <div class="modal-backdrop" role="presentation" on:click={cancelEditUser}>
             <div
               class="modal-panel user-modal"
@@ -1842,7 +2497,7 @@
               <header class="modal-header">
                 <div>
                   <h2 id="edit-user-title">Edit User</h2>
-                  <span>Update password and account permissions.</span>
+                  <span>{canManageUsers ? 'Update password and account permissions.' : 'Update your account password.'}</span>
                 </div>
                 <button class="icon-button" type="button" on:click={cancelEditUser} disabled={userLoading} title="Close modal">
                   <X size={16} />
@@ -1867,11 +2522,11 @@
                   <span>Permissions</span>
                   <div class="permission-grid">
                     {#each permissionOptions as permission}
-                      <label title={userEditDraft.username === 'root' ? 'Root always has every permission' : permission.description}>
+                      <label title={!canManageUsers ? 'Only root can change permissions' : userEditDraft.username === 'root' ? 'Root always has every permission' : permission.description}>
                         <input
                           type="checkbox"
                           checked={(userEditDraft.permissions || []).includes(permission.id)}
-                          disabled={userEditDraft.username === 'root'}
+                          disabled={!canManageUsers || userEditDraft.username === 'root'}
                           on:change={(event) => setEditUserPermission(permission.id, event.currentTarget.checked)}
                         />
                         <span>{permission.label}</span>
@@ -1884,7 +2539,7 @@
                     <X size={15} />
                     Cancel
                   </button>
-                  <button class="primary" type="submit" disabled={userLoading || (!!userEditDraft.password && (userEditDraft.password.length < 8 || userEditDraft.password !== userEditDraft.confirm))}>
+                  <button class="primary" type="submit" disabled={editUserSaveDisabled()}>
                     <Save size={15} />
                     Save
                   </button>
@@ -1911,42 +2566,37 @@
       {:else}
         <section class="panel console-panel">
           <h2>Web CLI</h2>
-          <div class="terminal" class:busy={consoleRunning} aria-busy={consoleRunning} bind:this={terminalViewport}>
-            {#if activeConsoleCommand}
-              <div class="terminal-progress" role="status" aria-live="polite">
-                <div class="terminal-progress-box">
-                  <RefreshCw size={22} class="spin" />
-                  <div>
-                    <strong>Command running</strong>
-                    <code>{activeConsoleCommand.cwd || '/'} $ {activeConsoleCommand.command}</code>
-                    <span>started {activeConsoleCommand.at} · {formatMillis(consoleElapsedMillis)} elapsed</span>
-                  </div>
-                </div>
-              </div>
-            {/if}
-            {#if terminalEntries.length === 0}
-              <div class="terminal-empty">No commands executed in this browser session.</div>
-            {/if}
+          <div
+            class="terminal"
+            class:busy={consoleRunning}
+            aria-busy={consoleRunning}
+            bind:this={terminalViewport}
+            use:focusTerminalOnClick
+          >
             {#each terminalEntries as entry}
-              <article class:failed={entry.exitCode !== 0}>
-                <header>
-                  <span>{entry.at}</span>
-                  <strong>{entry.cwd || '/'} $ {entry.command}</strong>
-                  <em>exit {entry.exitCode} · {formatMillis(entry.durationMillis)}{entry.timedOut ? ' · timeout' : ''}</em>
-                </header>
+              <div class="terminal-entry" class:failed={!entry.pending && entry.exitCode !== 0 && !entry.stopped} class:stopped={entry.stopped}>
+                <div class="terminal-command-line">
+                  <span class="terminal-identity">{terminalUser}@{terminalHost}</span><span>:</span><span class="terminal-path">{entry.cwd || '/'}</span><strong>$</strong><span class="terminal-command-text">{entry.command}</span>
+                </div>
                 {#if entry.stdout}
-                  <pre>{entry.stdout}{entry.stdoutTruncated ? '\n[stdout truncated]' : ''}</pre>
+                  <pre class="terminal-output">{entry.stdout}{entry.stdoutTruncated ? '\n[stdout truncated]' : ''}</pre>
                 {/if}
                 {#if entry.stderr}
-                  <pre class="stderr">{entry.stderr}{entry.stderrTruncated ? '\n[stderr truncated]' : ''}</pre>
+                  <pre class="terminal-output stderr">{entry.stderr}{entry.stderrTruncated ? '\n[stderr truncated]' : ''}</pre>
                 {/if}
-                {#if !entry.stdout && !entry.stderr}
-                  <pre class="muted-output">(no output)</pre>
+                {#if entry.pending}
+                  <div class="terminal-status-line">
+                    {consoleStopping && entry.runID === activeConsoleRunID ? 'stopping' : 'running'} · {formatMillis(consoleElapsedMillis)}
+                  </div>
+                {:else if entry.stopped || entry.exitCode !== 0 || entry.timedOut || entry.stdoutTruncated || entry.stderrTruncated}
+                  <div class="terminal-status-line">
+                    {entry.stopped ? 'stopped' : `exit ${entry.exitCode}`} · {formatMillis(entry.durationMillis)}{entry.timedOut ? ' · timeout' : ''}
+                  </div>
                 {/if}
-              </article>
+              </div>
             {/each}
             <form class="terminal-prompt" on:submit|preventDefault={runConsoleCommand}>
-              <span>{consoleCwd}</span>
+              <span class="terminal-identity">{terminalUser}@{terminalHost}</span><span>:</span><span class="terminal-path">{consoleCwd}</span>
               <strong>$</strong>
               <input
                 bind:this={terminalInput}
@@ -1956,6 +2606,18 @@
                 disabled={consoleRunning}
                 spellcheck="false"
               />
+              {#if consoleRunning}
+                <button
+                  type="button"
+                  class="terminal-stop-button"
+                  title="Stop command"
+                  aria-label="Stop running command"
+                  disabled={consoleStopping}
+                  on:click|stopPropagation={stopActiveConsoleCommand}
+                >
+                  <Square size={14} />
+                </button>
+              {/if}
             </form>
           </div>
         </section>

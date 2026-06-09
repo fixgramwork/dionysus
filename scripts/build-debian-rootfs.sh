@@ -48,6 +48,17 @@ set_env_value() {
     fi
 }
 
+debian_multiarch_dir() {
+    case "$1" in
+        amd64) printf 'x86_64-linux-gnu\n' ;;
+        arm64) printf 'aarch64-linux-gnu\n' ;;
+        *)
+            $STATUS error "Unsupported Debian architecture for Ollama service: $1"
+            exit 2
+            ;;
+    esac
+}
+
 fallback_to_builder() {
     if [ "${DIONYSUS_IN_LINUX_BUILDER:-0}" = "1" ]; then
         return
@@ -180,6 +191,7 @@ install_ollama() {
     $STATUS info "Preparing Ollama for Debian rootfs"
     OLLAMA_ARCH="$DEBIAN_ARCH" OLLAMA_DEBIAN_RUNTIME=0 sh scripts/fetch-ollama-linux.sh
     ollama_root="${OLLAMA_ROOT:-build/ollama/linux-$DEBIAN_ARCH/rootfs}"
+    ollama_multiarch="$(debian_multiarch_dir "$DEBIAN_ARCH")"
 
     if [ ! -x "$ollama_root/usr/bin/ollama" ]; then
         $STATUS error "Ollama binary missing after fetch: $ollama_root/usr/bin/ollama"
@@ -199,7 +211,7 @@ install_ollama() {
     chroot "$ROOTFS_DIR" /bin/sh -c 'id -u ollama >/dev/null 2>&1 || useradd --system --home /var/lib/ollama --shell /usr/sbin/nologin --gid ollama ollama'
     chroot "$ROOTFS_DIR" chown -R ollama:ollama /var/lib/ollama
 
-    cat > "$ROOTFS_DIR/etc/systemd/system/ollama.service" <<'EOF'
+    cat > "$ROOTFS_DIR/etc/systemd/system/ollama.service" <<EOF
 [Unit]
 Description=Ollama local model server
 After=network-online.target dionysus-llm-swap.service
@@ -212,7 +224,7 @@ Group=ollama
 Environment=HOME=/var/lib/ollama
 Environment=OLLAMA_HOST=127.0.0.1:11434
 Environment=OLLAMA_MODELS=/var/lib/ollama/models
-Environment=LD_LIBRARY_PATH=/lib/aarch64-linux-gnu:/usr/lib/aarch64-linux-gnu:/usr/lib/ollama
+Environment=LD_LIBRARY_PATH=/lib/$ollama_multiarch:/usr/lib/$ollama_multiarch:/usr/lib/ollama
 ExecStart=/usr/bin/ollama serve
 Restart=on-failure
 RestartSec=2s

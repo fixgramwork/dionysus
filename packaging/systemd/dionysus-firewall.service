@@ -1,0 +1,17 @@
+[Unit]
+Description=Dionysus managed nftables firewall
+Documentation=https://github.com/fixgramwork/dionysus
+After=local-fs.target dionysus-network.service
+Before=dionysus-pvedaemon.service dionysus-pveproxy.service
+Wants=network.target
+
+[Service]
+Type=oneshot
+EnvironmentFile=-/etc/dionysus/pve.env
+ExecStart=/usr/sbin/dionysusd firewall-apply
+ExecStop=/usr/sbin/dionysusd firewall-clear
+RemainAfterExit=yes
+TimeoutStartSec=20s
+
+[Install]
+WantedBy=multi-user.target

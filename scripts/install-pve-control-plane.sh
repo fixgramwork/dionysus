@@ -5,6 +5,7 @@ set -eu
 STATUS="sh scripts/status.sh"
 HOST_INSTALL=0
 INSTALL_DEPS="${DIONYSUS_INSTALL_DEPS:-0}"
+DIONYSUS_INSTALL_OLLAMA="${DIONYSUS_INSTALL_OLLAMA:-}"
 APT_GET="${APT_GET:-apt-get}"
 
 usage() {
@@ -16,6 +17,10 @@ Usage:
 Options:
   --host          Install directly into the running Ubuntu/Debian system.
   --install-deps  Run apt-get update/install for missing runtime packages.
+  --install-ollama
+                  Download and install Ollama during host install.
+  --no-install-ollama
+                  Skip Ollama installation during host install.
   --help          Show this help text.
 USAGE
 }
@@ -31,6 +36,12 @@ while [ "$#" -gt 0 ]; do
             ;;
         --no-install-deps)
             INSTALL_DEPS=0
+            ;;
+        --install-ollama)
+            DIONYSUS_INSTALL_OLLAMA=1
+            ;;
+        --no-install-ollama)
+            DIONYSUS_INSTALL_OLLAMA=0
             ;;
         --help)
             usage
@@ -59,12 +70,19 @@ else
     DESTDIR="${DESTDIR:-${DESTDIR_ARG:-build/pve-control-plane-rootfs}}"
 fi
 
+if [ -z "$DIONYSUS_INSTALL_OLLAMA" ]; then
+    DIONYSUS_INSTALL_OLLAMA="$HOST_INSTALL"
+fi
+
 PVE_DIR="${PVE_DIR:-pve}"
 SYSTEMD_DIR="${SYSTEMD_DIR:-packaging/systemd}"
 DIONYSUS_PROFILES_DIR="${DIONYSUS_PROFILES_DIR:-profiles}"
 DIONYSUSD_BIN="${DIONYSUSD_BIN:-}"
 DIONYSUS_PVE_USERNAME="${DIONYSUS_PVE_USERNAME:-root}"
 DIONYSUS_PVE_PASSWORD="${DIONYSUS_PVE_PASSWORD:-dionysus}"
+DIONYSUS_OLLAMA_ARCH="${DIONYSUS_OLLAMA_ARCH:-}"
+DIONYSUS_OLLAMA_REFRESH="${DIONYSUS_OLLAMA_REFRESH:-0}"
+DIONYSUS_OLLAMA_FETCH="${DIONYSUS_OLLAMA_FETCH:-sh scripts/fetch-ollama-linux.sh}"
 
 if [ "$HOST_INSTALL" -eq 1 ] && [ "$(id -u)" -ne 0 ]; then
     $STATUS error "Host install must be run as root, for example: sudo sh scripts/install-pve-control-plane.sh --host"
@@ -73,6 +91,11 @@ fi
 
 if [ "$INSTALL_DEPS" = "1" ] && [ "$HOST_INSTALL" -ne 1 ]; then
     $STATUS error "--install-deps is only supported with --host"
+    exit 2
+fi
+
+if [ "$DIONYSUS_INSTALL_OLLAMA" = "1" ] && [ "$HOST_INSTALL" -ne 1 ]; then
+    $STATUS error "--install-ollama is only supported with --host; Debian rootfs builds install Ollama through scripts/build-debian-rootfs.sh"
     exit 2
 fi
 
@@ -120,9 +143,21 @@ check_dependencies() {
     target_has_command swapon || add_package util-linux
     target_has_command mkswap || add_package util-linux
     target_has_command ip || add_package iproute2
+    target_has_command nft || add_package nftables
     target_has_command wpa_supplicant || add_package wpasupplicant
     if ! target_has_command udhcpc && ! target_has_command dhclient; then
         add_package isc-dhcp-client
+    fi
+    if [ "$DIONYSUS_INSTALL_OLLAMA" = "1" ]; then
+        target_has_command curl || add_package curl
+        target_has_command zstd || add_package zstd
+        target_has_command tar || add_package tar
+        target_has_command ar || add_package binutils
+        target_has_command xz || add_package xz-utils
+        target_has_command gzip || add_package gzip
+        target_has_command getent || add_package libc-bin
+        target_has_command groupadd || add_package passwd
+        target_has_command useradd || add_package passwd
     fi
 
     if [ -n "$MISSING_PACKAGES" ]; then
@@ -252,6 +287,7 @@ install_auth_credentials() {
       "permissions": [
         "node.read",
         "network.manage",
+        "firewall.manage",
         "packages.manage",
         "llm.manage",
         "services.manage",
@@ -277,6 +313,102 @@ EOF
     fi
 }
 
+detect_ollama_arch() {
+    if [ -n "$DIONYSUS_OLLAMA_ARCH" ]; then
+        case "$DIONYSUS_OLLAMA_ARCH" in
+            amd64|arm64) printf '%s\n' "$DIONYSUS_OLLAMA_ARCH" ;;
+            *)
+                $STATUS error "Unsupported DIONYSUS_OLLAMA_ARCH: $DIONYSUS_OLLAMA_ARCH"
+                $STATUS error "Expected one of: amd64, arm64"
+                exit 2
+                ;;
+        esac
+        return
+    fi
+
+    case "$(uname -m)" in
+        x86_64|amd64) printf 'amd64\n' ;;
+        aarch64|arm64) printf 'arm64\n' ;;
+        *)
+            $STATUS error "Unsupported host architecture for Ollama: $(uname -m)"
+            $STATUS error "Set DIONYSUS_OLLAMA_ARCH to one of: amd64, arm64"
+            exit 2
+            ;;
+    esac
+}
+
+ollama_multiarch_dir() {
+    case "$1" in
+        amd64) printf 'x86_64-linux-gnu\n' ;;
+        arm64) printf 'aarch64-linux-gnu\n' ;;
+        *)
+            $STATUS error "Unsupported Ollama architecture: $1"
+            exit 2
+            ;;
+    esac
+}
+
+install_ollama_runtime() {
+    if [ "$DIONYSUS_INSTALL_OLLAMA" != "1" ]; then
+        $STATUS info "Skipping Ollama host installation"
+        return
+    fi
+
+    arch="$(detect_ollama_arch)"
+    multiarch="$(ollama_multiarch_dir "$arch")"
+    ollama_root="${OLLAMA_ROOT:-build/ollama/linux-$arch/rootfs}"
+
+    $STATUS info "Installing Ollama runtime for $arch"
+    if [ ! -x "$DESTDIR/usr/bin/ollama" ] || [ "$DIONYSUS_OLLAMA_REFRESH" = "1" ]; then
+        OLLAMA_ARCH="$arch" OLLAMA_DEBIAN_RUNTIME=0 $DIONYSUS_OLLAMA_FETCH
+        if [ ! -x "$ollama_root/usr/bin/ollama" ]; then
+            $STATUS error "Ollama binary missing after fetch: $ollama_root/usr/bin/ollama"
+            exit 1
+        fi
+
+        mkdir -p "$DESTDIR/usr/bin" "$DESTDIR/usr/lib"
+        cp "$ollama_root/usr/bin/ollama" "$DESTDIR/usr/bin/ollama"
+        chmod 755 "$DESTDIR/usr/bin/ollama"
+        if [ -d "$ollama_root/usr/lib/ollama" ]; then
+            rm -rf "$DESTDIR/usr/lib/ollama"
+            cp -R "$ollama_root/usr/lib/ollama" "$DESTDIR/usr/lib/ollama"
+            chmod -R a+rX "$DESTDIR/usr/lib/ollama"
+        fi
+    else
+        $STATUS info "Reusing existing Ollama binary at $DESTDIR/usr/bin/ollama"
+    fi
+
+    mkdir -p "$DESTDIR/var/lib/ollama/models"
+    getent group ollama >/dev/null || groupadd --system ollama
+    id -u ollama >/dev/null 2>&1 || useradd --system --home /var/lib/ollama --shell /usr/sbin/nologin --gid ollama ollama
+    chown -R ollama:ollama "$DESTDIR/var/lib/ollama"
+    chmod 755 "$DESTDIR/var/lib/ollama" "$DESTDIR/var/lib/ollama/models"
+
+    cat > "$DESTDIR/etc/systemd/system/ollama.service" <<EOF
+[Unit]
+Description=Ollama local model server
+After=network-online.target dionysus-llm-swap.service
+Wants=network-online.target dionysus-llm-swap.service
+
+[Service]
+Type=simple
+User=ollama
+Group=ollama
+Environment=HOME=/var/lib/ollama
+Environment=OLLAMA_HOST=127.0.0.1:11434
+Environment=OLLAMA_MODELS=/var/lib/ollama/models
+Environment=LD_LIBRARY_PATH=/lib/$multiarch:/usr/lib/$multiarch:/usr/lib/ollama
+ExecStart=/usr/bin/ollama serve
+Restart=on-failure
+RestartSec=2s
+
+[Install]
+WantedBy=multi-user.target
+EOF
+    chmod 644 "$DESTDIR/etc/systemd/system/ollama.service"
+    $STATUS success "Installed Ollama runtime and systemd unit"
+}
+
 enable_host_services() {
     if [ "$HOST_INSTALL" -ne 1 ]; then
         return
@@ -285,7 +417,11 @@ enable_host_services() {
     $STATUS info "Reloading systemd and enabling Dionysus services"
     systemctl daemon-reload
     systemctl enable --now dionysus-network.service
+    systemctl enable --now dionysus-firewall.service
     systemctl enable --now dionysus-llm-swap.service
+    if [ "$DIONYSUS_INSTALL_OLLAMA" = "1" ]; then
+        systemctl enable --now ollama.service
+    fi
     systemctl enable --now dionysus-metricsd.service
     systemctl enable --now dionysus-pvedaemon.service
     systemctl enable --now dionysus-pveproxy.service
@@ -301,6 +437,8 @@ require_file "$SYSTEMD_DIR/dionysus-pve.env"
 require_file "$SYSTEMD_DIR/dionysus-network"
 require_file "$SYSTEMD_DIR/dionysus-network.env"
 require_file "$SYSTEMD_DIR/dionysus-network.service"
+require_file "$SYSTEMD_DIR/dionysus-firewall.env"
+require_file "$SYSTEMD_DIR/dionysus-firewall.service"
 require_file "$SYSTEMD_DIR/dionysus-metricsd.service"
 require_file "$SYSTEMD_DIR/dionysus-pvedaemon.service"
 require_file "$SYSTEMD_DIR/dionysus-pveproxy.service"
@@ -357,6 +495,11 @@ chmod 755 "$DESTDIR/usr/lib/dionysus/dionysus-network"
 chmod 600 "$DESTDIR/etc/dionysus/network.env"
 chmod 644 "$DESTDIR/etc/systemd/system/dionysus-network.service"
 
+cp "$SYSTEMD_DIR/dionysus-firewall.env" "$DESTDIR/etc/dionysus/firewall.env"
+cp "$SYSTEMD_DIR/dionysus-firewall.service" "$DESTDIR/etc/systemd/system/dionysus-firewall.service"
+chmod 600 "$DESTDIR/etc/dionysus/firewall.env"
+chmod 644 "$DESTDIR/etc/systemd/system/dionysus-firewall.service"
+
 cp "$SYSTEMD_DIR/dionysus-metricsd.service" "$DESTDIR/etc/systemd/system/dionysus-metricsd.service"
 cp "$SYSTEMD_DIR/dionysus-pvedaemon.service" "$DESTDIR/etc/systemd/system/dionysus-pvedaemon.service"
 cp "$SYSTEMD_DIR/dionysus-pveproxy.service" "$DESTDIR/etc/systemd/system/dionysus-pveproxy.service"
@@ -369,6 +512,8 @@ cp "$SYSTEMD_DIR/dionysus-llm-swap.service" "$DESTDIR/etc/systemd/system/dionysu
 cp "$SYSTEMD_DIR/dionysus-llm-swap.env" "$DESTDIR/etc/dionysus/llm-swap.env"
 chmod 755 "$DESTDIR/usr/lib/dionysus/dionysus-llm-swap"
 chmod 644 "$DESTDIR/etc/systemd/system/dionysus-llm-swap.service" "$DESTDIR/etc/dionysus/llm-swap.env"
+
+install_ollama_runtime
 
 if [ -d "$DIONYSUS_PROFILES_DIR" ]; then
     find "$DIONYSUS_PROFILES_DIR" -maxdepth 1 -type f \( -name '*.yaml' -o -name '*.yml' \) \
@@ -383,6 +528,8 @@ ln -sf ../dionysus-network.service \
     "$DESTDIR/etc/systemd/system/multi-user.target.wants/dionysus-network.service"
 ln -sf ../dionysus-network.service \
     "$DESTDIR/etc/systemd/system/network-online.target.wants/dionysus-network.service"
+ln -sf ../dionysus-firewall.service \
+    "$DESTDIR/etc/systemd/system/multi-user.target.wants/dionysus-firewall.service"
 ln -sf ../dionysus-metricsd.service \
     "$DESTDIR/etc/systemd/system/multi-user.target.wants/dionysus-metricsd.service"
 ln -sf ../dionysus-pvedaemon.service \

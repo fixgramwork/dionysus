@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -157,7 +156,7 @@ func initMetricsSchema(dbPath string) error {
 }
 
 func runSQLite(dbPath string, sql string) error {
-	output, err := exec.Command("sqlite3", dbPath, sql).CombinedOutput()
+	output, err := newCommand("sqlite3", dbPath, sql).CombinedOutput()
 	if err != nil {
 		return fmt.Errorf(strings.TrimSpace(string(output)))
 	}
@@ -165,7 +164,7 @@ func runSQLite(dbPath string, sql string) error {
 }
 
 func querySQLiteJSON(dbPath string, sql string) ([]map[string]any, error) {
-	output, err := exec.Command("sqlite3", "-json", dbPath, sql).CombinedOutput()
+	output, err := newCommand("sqlite3", "-json", dbPath, sql).CombinedOutput()
 	if err != nil {
 		return nil, fmt.Errorf(strings.TrimSpace(string(output)))
 	}

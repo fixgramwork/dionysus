@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"fmt"
-	"os"
 	"os/exec"
 	"sort"
 	"strings"
@@ -316,11 +315,6 @@ func aptToolsStatus() map[string]any {
 	}
 }
 
-func commandAvailable(command string) bool {
-	_, err := exec.LookPath(command)
-	return err == nil
-}
-
 func runPackageReadCommand(timeout time.Duration, outputLimit int, command string, args ...string) (string, error) {
 	result := runPackageCommand(timeout, outputLimit, command, args...)
 	if asString(result["status"]) != "ok" {
@@ -368,8 +362,7 @@ func runPackageCommand(timeout time.Duration, outputLimit int, command string, a
 
 	stdout := &limitedBuffer{limit: outputLimit}
 	stderr := &limitedBuffer{limit: outputLimit}
-	cmd := exec.CommandContext(ctx, command, args...)
-	cmd.Env = append(os.Environ(), "PATH=/bin:/sbin:/usr/bin:/usr/sbin")
+	cmd := newCommandContext(ctx, command, args...)
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}

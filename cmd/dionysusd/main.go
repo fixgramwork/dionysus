@@ -36,6 +36,16 @@ func main() {
 		if err == nil {
 			err = runMetricsd(cfg, true)
 		}
+	case "firewall-apply":
+		err = ensureTargetOSRuntime(cfg)
+		if err == nil {
+			err = runFirewallApplyCommand(cfg)
+		}
+	case "firewall-clear":
+		err = ensureTargetOSRuntime(cfg)
+		if err == nil {
+			err = runFirewallClearCommand()
+		}
 	default:
 		fmt.Fprintf(os.Stderr, "unsupported command: %s\n", command)
 		os.Exit(2)

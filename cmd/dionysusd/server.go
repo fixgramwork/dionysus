@@ -167,7 +167,14 @@ func handleAPI(cfg Config, request *http.Request) (any, int, error) {
 		return systemdStatus(), http.StatusOK, nil
 	case "POST /api2/json/nodes/localhost/console/exec":
 		body := readJSONBody(request)
-		data, err := runConsoleCommand(cfg, body)
+		data, err := runConsoleCommand(request.Context(), cfg, body)
+		if err != nil {
+			return nil, http.StatusBadRequest, err
+		}
+		return data, http.StatusOK, nil
+	case "POST /api2/json/nodes/localhost/console/stop":
+		body := readJSONBody(request)
+		data, err := stopConsoleCommand(body)
 		if err != nil {
 			return nil, http.StatusBadRequest, err
 		}
@@ -186,6 +193,20 @@ func handleAPI(cfg Config, request *http.Request) (any, int, error) {
 	case "POST /api2/json/nodes/localhost/network/apply":
 		body := readJSONBody(request)
 		return applyNetworkService(cfg, jsonBool(body, "dryRun", false)), http.StatusOK, nil
+	case "GET /api2/json/nodes/localhost/firewall/status":
+		return firewallStatus(cfg), http.StatusOK, nil
+	case "GET /api2/json/nodes/localhost/firewall/config":
+		return firewallConfigPayload(cfg.FirewallConfig), http.StatusOK, nil
+	case "POST /api2/json/nodes/localhost/firewall/config":
+		body := readJSONBody(request)
+		data, err := updateFirewallConfig(cfg, body)
+		if err != nil {
+			return nil, http.StatusBadRequest, err
+		}
+		return data, http.StatusOK, nil
+	case "POST /api2/json/nodes/localhost/firewall/apply":
+		body := readJSONBody(request)
+		return applyFirewallRuntime(cfg, jsonBool(body, "dryRun", false)), http.StatusOK, nil
 	case "GET /api2/json/nodes/localhost/packages/status":
 		return aptPackagesStatus(), http.StatusOK, nil
 	case "GET /api2/json/nodes/localhost/packages/search":

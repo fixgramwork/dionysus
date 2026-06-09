@@ -49,9 +49,10 @@ async function request(path, options = {}) {
   return payload.data;
 }
 
-export function postJSON(path, body) {
-  return api(path, {
-    method: 'POST',
-    body: JSON.stringify(body)
-  });
+export function postJSON(path, body, options = {}) {
+	return api(path, {
+		...options,
+		method: 'POST',
+		body: JSON.stringify(body)
+	});
 }

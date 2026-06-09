@@ -24,6 +24,7 @@ const (
 	defaultAuthUsername             = "root"
 	defaultWWWRoot                  = "/usr/share/dionysus-pve-manager/www"
 	defaultNetworkConfig            = "/etc/dionysus/network.env"
+	defaultFirewallConfig           = "/etc/dionysus/firewall.env"
 	devAllowHostEnv                 = "DIONYSUS_DEV_ALLOW_HOST"
 	defaultIntervalSecs             = 30
 	defaultRetentionDays            = 7
@@ -47,6 +48,7 @@ type Config struct {
 	AuthPassword          string
 	WWWRoot               string
 	NetworkConfig         string
+	FirewallConfig        string
 	IntervalSeconds       int
 	RetentionDays         int
 	ConsoleTimeoutSeconds int
@@ -75,6 +77,7 @@ func configFromArgs(command string, args []string) Config {
 		AuthPassword:          os.Getenv("DIONYSUS_PVE_PASSWORD"),
 		WWWRoot:               envDefault("DIONYSUS_PVE_WWW", defaultWWWRoot),
 		NetworkConfig:         envDefault("DIONYSUS_NETWORK_CONFIG", defaultNetworkConfig),
+		FirewallConfig:        envDefault("DIONYSUS_FIREWALL_CONFIG", defaultFirewallConfig),
 		IntervalSeconds:       envInt("DIONYSUS_METRICS_INTERVAL_SECONDS", defaultIntervalSecs),
 		RetentionDays:         envInt("DIONYSUS_METRICS_RETENTION_DAYS", defaultRetentionDays),
 		ConsoleTimeoutSeconds: envInt("DIONYSUS_CONSOLE_TIMEOUT_SECONDS", defaultConsoleTimeoutSecs),
@@ -98,6 +101,7 @@ func configFromArgs(command string, args []string) Config {
 	flags.StringVar(&cfg.AuthPassword, "auth-password", cfg.AuthPassword, "")
 	flags.StringVar(&cfg.WWWRoot, "www-root", cfg.WWWRoot, "")
 	flags.StringVar(&cfg.NetworkConfig, "network-config", cfg.NetworkConfig, "")
+	flags.StringVar(&cfg.FirewallConfig, "firewall-config", cfg.FirewallConfig, "")
 	flags.IntVar(&cfg.IntervalSeconds, "interval", cfg.IntervalSeconds, "")
 	flags.IntVar(&cfg.RetentionDays, "retention-days", cfg.RetentionDays, "")
 	flags.IntVar(&cfg.ConsoleTimeoutSeconds, "console-timeout", cfg.ConsoleTimeoutSeconds, "")

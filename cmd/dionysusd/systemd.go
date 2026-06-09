@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"os"
 	"os/exec"
 	"strings"
 	"syscall"
@@ -16,7 +15,7 @@ const (
 
 func systemdStatus() map[string]any {
 	command := "systemctl status --no-pager --lines=80"
-	if _, err := exec.LookPath("systemctl"); err != nil {
+	if !commandAvailable("systemctl") {
 		return map[string]any{
 			"available":       false,
 			"command":         command,
@@ -45,8 +44,7 @@ func runSystemctlStatus() map[string]any {
 
 	stdout := &limitedBuffer{limit: systemctlStatusOutputLimit}
 	stderr := &limitedBuffer{limit: systemctlStatusOutputLimit}
-	cmd := exec.CommandContext(ctx, "systemctl", "status", "--no-pager", "--lines=80")
-	cmd.Env = append(os.Environ(), "PATH="+os.Getenv("PATH")+":/bin:/sbin:/usr/bin:/usr/sbin")
+	cmd := newCommandContext(ctx, "systemctl", "status", "--no-pager", "--lines=80")
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}

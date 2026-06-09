@@ -29,6 +29,7 @@ DIONYSUS_DEV_PASSWORD_FILE ?= $(DIONYSUS_DEV_DIR)/pve.password
 DIONYSUS_DEV_USERNAME ?= root
 DIONYSUS_DEV_PASSWORD ?= dionysus
 DIONYSUS_DEV_NETWORK_CONFIG ?= $(DIONYSUS_DEV_DIR)/network.env
+DIONYSUS_DEV_FIREWALL_CONFIG ?= $(DIONYSUS_DEV_DIR)/firewall.env
 DIONYSUS_DEV_WWW ?= pve/www
 PVE_UI_DIR ?= frontend/svelte
 PVE_UI_INDEX := pve/www/index.html
@@ -112,13 +113,13 @@ dev-data:
 	@printf '%s\n' "$(DIONYSUS_DEV_PASSWORD)" > "$(DIONYSUS_DEV_PASSWORD_FILE)"
 	@if [ ! -f "$(DIONYSUS_DEV_USERS_FILE)" ]; then \
 		now=$$(date +%s); \
-		printf '{\n  "users": [\n    {\n      "username": "%s",\n      "passwordHash": "%s",\n      "permissions": [\n        "node.read",\n        "network.manage",\n        "packages.manage",\n        "llm.manage",\n        "services.manage",\n        "console.run"\n      ],\n      "createdAt": %s,\n      "updatedAt": %s\n    }\n  ]\n}\n' "$(DIONYSUS_DEV_USERNAME)" "$(DIONYSUS_DEV_PASSWORD)" "$$now" "$$now" > "$(DIONYSUS_DEV_USERS_FILE)"; \
+		printf '{\n  "users": [\n    {\n      "username": "%s",\n      "passwordHash": "%s",\n      "permissions": [\n        "node.read",\n        "network.manage",\n        "firewall.manage",\n        "packages.manage",\n        "llm.manage",\n        "services.manage",\n        "console.run"\n      ],\n      "createdAt": %s,\n      "updatedAt": %s\n    }\n  ]\n}\n' "$(DIONYSUS_DEV_USERNAME)" "$(DIONYSUS_DEV_PASSWORD)" "$$now" "$$now" > "$(DIONYSUS_DEV_USERS_FILE)"; \
 	fi
 	@chmod 600 "$(DIONYSUS_DEV_TOKEN_FILE)" "$(DIONYSUS_DEV_USERS_FILE)" "$(DIONYSUS_DEV_USER_FILE)" "$(DIONYSUS_DEV_PASSWORD_FILE)"
 
 run: dev-data dionysusd pve-ui
 	@$(STATUS) info "Starting Dionysus control-plane UI at http://$(DIONYSUS_DEV_LISTEN)"
-	@$(DIONYSUSD_BIN) proxy --dev-allow-host --listen "$(DIONYSUS_DEV_LISTEN)" --www-root "$(DIONYSUS_DEV_WWW)" --metrics-db "$(DIONYSUS_DEV_METRICS_DB)" --token-file "$(DIONYSUS_DEV_TOKEN_FILE)" --auth-users-file "$(DIONYSUS_DEV_USERS_FILE)" --auth-user-file "$(DIONYSUS_DEV_USER_FILE)" --auth-password-file "$(DIONYSUS_DEV_PASSWORD_FILE)" --network-config "$(DIONYSUS_DEV_NETWORK_CONFIG)"
+	@$(DIONYSUSD_BIN) proxy --dev-allow-host --listen "$(DIONYSUS_DEV_LISTEN)" --www-root "$(DIONYSUS_DEV_WWW)" --metrics-db "$(DIONYSUS_DEV_METRICS_DB)" --token-file "$(DIONYSUS_DEV_TOKEN_FILE)" --auth-users-file "$(DIONYSUS_DEV_USERS_FILE)" --auth-user-file "$(DIONYSUS_DEV_USER_FILE)" --auth-password-file "$(DIONYSUS_DEV_PASSWORD_FILE)" --network-config "$(DIONYSUS_DEV_NETWORK_CONFIG)" --firewall-config "$(DIONYSUS_DEV_FIREWALL_CONFIG)"
 
 dionysusd: $(DIONYSUSD_BIN)
 
@@ -153,7 +154,7 @@ pve-check: check-pve-tools $(DIONYSUSD_BIN) pve-ui
 	@$(STATUS) info "Verifying staged PVE control-plane install in $(PVE_CHECK_ROOTFS)"
 	@DESTDIR="$(PVE_CHECK_ROOTFS)" DIONYSUSD_BIN="$(DIONYSUSD_BIN)" DIONYSUS_PROFILES_DIR="profiles" $(PVE_CONTROL_PLANE_INSTALL)
 
-pve-control-plane-install: pve-check scripts/install-pve-control-plane.sh $(DIONYSUSD_BIN) pve/bin/dionysus-metricsd pve/bin/dionysus-pvedaemon pve/bin/dionysus-pveproxy $(PVE_UI_INDEX) packaging/systemd/dionysus-pve.env packaging/systemd/dionysus-network packaging/systemd/dionysus-network.env packaging/systemd/dionysus-network.service packaging/systemd/dionysus-metricsd.service packaging/systemd/dionysus-pvedaemon.service packaging/systemd/dionysus-pveproxy.service packaging/systemd/dionysus-llm-swap.service packaging/systemd/dionysus-llm-swap.env packaging/systemd/dionysus-llm-swap
+pve-control-plane-install: pve-check scripts/install-pve-control-plane.sh $(DIONYSUSD_BIN) pve/bin/dionysus-metricsd pve/bin/dionysus-pvedaemon pve/bin/dionysus-pveproxy $(PVE_UI_INDEX) packaging/systemd/dionysus-pve.env packaging/systemd/dionysus-network packaging/systemd/dionysus-network.env packaging/systemd/dionysus-network.service packaging/systemd/dionysus-firewall.env packaging/systemd/dionysus-firewall.service packaging/systemd/dionysus-metricsd.service packaging/systemd/dionysus-pvedaemon.service packaging/systemd/dionysus-pveproxy.service packaging/systemd/dionysus-llm-swap.service packaging/systemd/dionysus-llm-swap.env packaging/systemd/dionysus-llm-swap
 	@$(STATUS) info "Staging Proxmox-style Dionysus control plane in $(PVE_CONTROL_PLANE_ROOTFS)"
 	@DESTDIR="$(PVE_CONTROL_PLANE_ROOTFS)" DIONYSUSD_BIN="$(DIONYSUSD_BIN)" DIONYSUS_PROFILES_DIR="profiles" $(PVE_CONTROL_PLANE_INSTALL)
 
