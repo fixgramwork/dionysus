@@ -992,12 +992,8 @@ meter {
   margin: 10px;
 }
 
-.firewall-console {
-  display: grid;
-  gap: 10px;
-  min-width: 0;
-}
-
+.overview-console,
+.firewall-console,
 .llm-console {
   display: grid;
   gap: 10px;
@@ -1016,6 +1012,10 @@ meter {
   grid-template-columns: minmax(0, 1fr) minmax(260px, 320px);
   min-height: 268px;
   overflow: hidden;
+}
+
+.overview-hero {
+  grid-column: 1 / -1;
 }
 
 .firewall-hero-main {
@@ -1128,6 +1128,32 @@ meter {
   height: 306px;
   max-width: 270px;
   width: 100%;
+}
+
+.overview-hero .firewall-hero-title > svg {
+  background: var(--ds-accent);
+}
+
+.overview-companion {
+  background:
+    linear-gradient(180deg, rgb(219 234 254 / 46%), rgb(248 250 252 / 88%)),
+    repeating-linear-gradient(135deg, rgb(37 99 235 / 8%) 0 1px, transparent 1px 14px);
+}
+
+.overview-companion .overview-guide {
+  height: 306px;
+  max-width: 270px;
+  width: 100%;
+}
+
+.overview-guide .character-head {
+  left: 36px;
+  top: 18px;
+  transform: rotateX(2deg) rotateY(7deg);
+}
+
+.overview-guide .character-face span {
+  transform: translateX(5px);
 }
 
 .firewall-guardian .character-head {
@@ -1822,6 +1848,7 @@ meter {
   }
 
   .firewall-companion .firewall-guardian,
+  .overview-companion .overview-guide,
   .llm-companion .llm-guide {
     height: 250px;
     transform: scale(0.82);
