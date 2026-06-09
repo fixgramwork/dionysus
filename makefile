@@ -112,7 +112,7 @@ dev-data:
 	@printf '%s\n' "$(DIONYSUS_DEV_PASSWORD)" > "$(DIONYSUS_DEV_PASSWORD_FILE)"
 	@if [ ! -f "$(DIONYSUS_DEV_USERS_FILE)" ]; then \
 		now=$$(date +%s); \
-		printf '{\n  "users": [\n    {\n      "username": "%s",\n      "passwordHash": "%s",\n      "permissions": [\n        "node.read",\n        "network.manage",\n        "llm.manage",\n        "services.manage",\n        "console.run"\n      ],\n      "createdAt": %s,\n      "updatedAt": %s\n    }\n  ]\n}\n' "$(DIONYSUS_DEV_USERNAME)" "$(DIONYSUS_DEV_PASSWORD)" "$$now" "$$now" > "$(DIONYSUS_DEV_USERS_FILE)"; \
+		printf '{\n  "users": [\n    {\n      "username": "%s",\n      "passwordHash": "%s",\n      "permissions": [\n        "node.read",\n        "network.manage",\n        "packages.manage",\n        "llm.manage",\n        "services.manage",\n        "console.run"\n      ],\n      "createdAt": %s,\n      "updatedAt": %s\n    }\n  ]\n}\n' "$(DIONYSUS_DEV_USERNAME)" "$(DIONYSUS_DEV_PASSWORD)" "$$now" "$$now" > "$(DIONYSUS_DEV_USERS_FILE)"; \
 	fi
 	@chmod 600 "$(DIONYSUS_DEV_TOKEN_FILE)" "$(DIONYSUS_DEV_USERS_FILE)" "$(DIONYSUS_DEV_USER_FILE)" "$(DIONYSUS_DEV_PASSWORD_FILE)"
 

@@ -147,6 +147,7 @@ The management UI first signs in through `/api2/json/access/ticket`, stores the 
 `dionysus-llm-swap.service` creates and enables a dedicated swap file before `ollama.service`, `dionysus-pvedaemon.service`, and `dionysus-pveproxy.service`.
 `ollama.service` is enabled in the Debian rootfs so it starts automatically at OS boot, and the Local LLM web tab can start/stop the service, list downloaded and loaded models, unload a model, search the Ollama library, and pull a selected model.
 The web UI includes a KV-cache optimization panel that compares current kernel values against the built-in Ollama KV-cache profile, previews changes, applies them manually, and records operator-visible output in the web console.
+The web UI also includes an APT Packages page that shows the installed package count, lists installed packages with per-package update/delete actions, refreshes package indexes, searches `apt-cache`, and installs selected packages through explicit `apt-get` actions.
 The web UI also includes a Users page where the root account can add console accounts, rotate passwords, delete non-current users, and assign per-user permissions without editing files by hand.
 `dionysusd` fails closed outside a Linux/systemd target OS by default. Local UI-only development must be explicit with `--dev-allow-host` or `DIONYSUS_DEV_ALLOW_HOST=1`.
 

@@ -163,6 +163,8 @@ func handleAPI(cfg Config, request *http.Request) (any, int, error) {
 		return nodeStatus(cfg), http.StatusOK, nil
 	case "GET /api2/json/nodes/localhost/services":
 		return serviceStatus(), http.StatusOK, nil
+	case "GET /api2/json/nodes/localhost/systemd/status":
+		return systemdStatus(), http.StatusOK, nil
 	case "POST /api2/json/nodes/localhost/console/exec":
 		body := readJSONBody(request)
 		data, err := runConsoleCommand(cfg, body)
@@ -184,6 +186,37 @@ func handleAPI(cfg Config, request *http.Request) (any, int, error) {
 	case "POST /api2/json/nodes/localhost/network/apply":
 		body := readJSONBody(request)
 		return applyNetworkService(cfg, jsonBool(body, "dryRun", false)), http.StatusOK, nil
+	case "GET /api2/json/nodes/localhost/packages/status":
+		return aptPackagesStatus(), http.StatusOK, nil
+	case "GET /api2/json/nodes/localhost/packages/search":
+		data, err := searchAptPackages(request.URL.Query().Get("q"))
+		if err != nil {
+			return nil, http.StatusBadRequest, err
+		}
+		return data, http.StatusOK, nil
+	case "POST /api2/json/nodes/localhost/packages/index/update":
+		return updateAptPackageIndex(cfg), http.StatusOK, nil
+	case "POST /api2/json/nodes/localhost/packages/install":
+		body := readJSONBody(request)
+		data, err := installAptPackage(cfg, body)
+		if err != nil {
+			return nil, http.StatusBadRequest, err
+		}
+		return data, http.StatusOK, nil
+	case "POST /api2/json/nodes/localhost/packages/remove":
+		body := readJSONBody(request)
+		data, err := removeAptPackage(cfg, body)
+		if err != nil {
+			return nil, http.StatusBadRequest, err
+		}
+		return data, http.StatusOK, nil
+	case "POST /api2/json/nodes/localhost/packages/upgrade":
+		body := readJSONBody(request)
+		data, err := upgradeAptPackage(cfg, body)
+		if err != nil {
+			return nil, http.StatusBadRequest, err
+		}
+		return data, http.StatusOK, nil
 	case "GET /api2/json/nodes/localhost/ollama/status":
 		return ollamaStatus(cfg), http.StatusOK, nil
 	case "GET /api2/json/nodes/localhost/ollama/library/search":

@@ -132,6 +132,7 @@ cat > "$STAGING_DIR/etc/dionysus/pve.users.json" <<EOF
       "permissions": [
         "node.read",
         "network.manage",
+        "packages.manage",
         "llm.manage",
         "services.manage",
         "console.run"

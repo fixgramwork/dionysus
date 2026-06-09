@@ -252,6 +252,7 @@ install_auth_credentials() {
       "permissions": [
         "node.read",
         "network.manage",
+        "packages.manage",
         "llm.manage",
         "services.manage",
         "console.run"
