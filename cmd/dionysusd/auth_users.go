@@ -36,6 +36,7 @@ const rootAuthUsername = "root"
 var authPermissionCatalog = []authPermission{
 	{ID: "node.read", Label: "Node status", Description: "Read node status, metrics, and inventory"},
 	{ID: "network.manage", Label: "Network", Description: "Preview, save, and apply network settings"},
+	{ID: "firewall.manage", Label: "Firewall", Description: "Preview, save, and apply host firewall rules"},
 	{ID: "packages.manage", Label: "Packages", Description: "Install, remove, and upgrade APT packages"},
 	{ID: "llm.manage", Label: "Local LLM", Description: "Read and apply local LLM runtime tuning"},
 	{ID: "services.manage", Label: "Services", Description: "Read service state and perform service operations"},
@@ -166,23 +167,25 @@ func createAuthUser(cfg Config, currentUsername string, body map[string]any) (ma
 }
 
 func updateAuthUser(cfg Config, currentUsername string, body map[string]any) (map[string]any, error) {
-	if err := requireRootAuthUser(currentUsername); err != nil {
-		return nil, err
-	}
-
 	username := strings.TrimSpace(asString(body["username"]))
 	password := asString(body["password"])
 	if err := validateAuthUsername(username); err != nil {
 		return nil, err
+	}
+	currentIsRoot := currentUsername == rootAuthUsername
+	currentIsTarget := currentUsername == username
+	if !currentIsRoot && !currentIsTarget {
+		return nil, fmt.Errorf("only root can manage other users")
 	}
 	if password != "" {
 		if err := validateAuthPassword(password); err != nil {
 			return nil, err
 		}
 	}
-	permissions, err := normalizeRequestedAuthPermissions(username, authPermissionsFromValue(body["permissions"]))
-	if err != nil {
-		return nil, err
+	if !currentIsRoot {
+		if _, ok := body["permissions"]; ok {
+			return nil, fmt.Errorf("only root can change user permissions")
+		}
 	}
 
 	authUsersMu.Lock()
@@ -195,6 +198,14 @@ func updateAuthUser(cfg Config, currentUsername string, body map[string]any) (ma
 	for index, user := range users {
 		if user.Username != username {
 			continue
+		}
+		permissions := user.Permissions
+		if currentIsRoot {
+			nextPermissions, err := normalizeRequestedAuthPermissions(username, authPermissionsFromValue(body["permissions"]))
+			if err != nil {
+				return nil, err
+			}
+			permissions = nextPermissions
 		}
 		if password != "" {
 			users[index].PasswordHash = hashPassword(password)
@@ -210,14 +221,13 @@ func updateAuthUser(cfg Config, currentUsername string, body map[string]any) (ma
 }
 
 func updateAuthUserPassword(cfg Config, currentUsername string, body map[string]any) (map[string]any, error) {
-	if err := requireRootAuthUser(currentUsername); err != nil {
-		return nil, err
-	}
-
 	username := strings.TrimSpace(asString(body["username"]))
 	password := asString(body["password"])
 	if err := validateAuthUsername(username); err != nil {
 		return nil, err
+	}
+	if currentUsername != rootAuthUsername && currentUsername != username {
+		return nil, fmt.Errorf("only root can change other user passwords")
 	}
 	if err := validateAuthPassword(password); err != nil {
 		return nil, err

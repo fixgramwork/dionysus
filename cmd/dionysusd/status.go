@@ -2,7 +2,6 @@ package main
 
 import (
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
 )
@@ -48,8 +47,7 @@ func nodeStatus(cfg Config) map[string]any {
 }
 
 func freeCommandStatus() map[string]any {
-	cmd := exec.Command("/bin/sh", "-lc", "free -h")
-	cmd.Env = append(os.Environ(), "PATH="+os.Getenv("PATH")+":/bin:/sbin:/usr/bin:/usr/sbin")
+	cmd := newCommand("/bin/sh", "-lc", "free -h")
 	output, err := cmd.Output()
 	status := map[string]any{
 		"command": "free -h",

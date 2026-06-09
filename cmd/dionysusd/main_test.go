@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"net/http"
 	"os"
@@ -72,6 +73,28 @@ func TestValidatesOllamaModelInputs(t *testing.T) {
 	}
 	if _, err := cleanOllamaKeepAlive("30 minutes"); err == nil {
 		t.Fatal("invalid keepAlive should be rejected")
+	}
+}
+
+func TestOllamaInstalledModelChecksUseNameAliases(t *testing.T) {
+	tags := OllamaGet{
+		Reachable: true,
+		Status:    200,
+		Data: map[string]any{
+			"models": []any{map[string]any{"name": "llama3.2:latest", "size": float64(10), "modified_at": "now"}},
+		},
+	}
+	if !ollamaTagsContainModel(tags, "llama3.2") {
+		t.Fatalf("tags should match pulled model aliases: %#v", tags)
+	}
+	status := map[string]any{
+		"models": []any{map[string]any{"name": "hf.co/example/model:Q4_K_M"}},
+	}
+	if !ollamaStatusHasModel(status, "hf.co/example/model:Q4_K_M") {
+		t.Fatalf("status should match fully qualified model names: %#v", status)
+	}
+	if ollamaStatusHasModel(status, "llama3.2") {
+		t.Fatalf("status should not match unrelated models: %#v", status)
 	}
 }
 
@@ -186,6 +209,21 @@ func TestSystemdStatusRunsSystemctlStatus(t *testing.T) {
 	}
 }
 
+func TestCommandLookupUsesDefaultSystemPath(t *testing.T) {
+	t.Setenv("PATH", "")
+
+	if !commandAvailable("sh") {
+		t.Fatal("sh should be found through the default system command path")
+	}
+	output, err := commandOutput("sh", "-c", "printf dionysus")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if output != "dionysus" {
+		t.Fatalf("command output mismatch: %q", output)
+	}
+}
+
 func TestAuthRequiresExistingTokenFile(t *testing.T) {
 	root := uniqueTempDir(t, "auth")
 	cfg := testConfig(root)
@@ -291,8 +329,34 @@ func TestManagesAuthUsers(t *testing.T) {
 	if len(permissions) != 2 || permissions[0] != "node.read" || permissions[1] != "network.manage" {
 		t.Fatalf("updated permissions mismatch: %#v", updated)
 	}
+	updated, err = updateAuthUser(cfg, "ops", map[string]any{
+		"username": "ops",
+		"password": "secret789",
+	})
+	if err != nil {
+		t.Fatalf("user should update own password: %v", err)
+	}
+	permissions = asStringSliceForTest(updated["permissions"])
+	if len(permissions) != 2 || permissions[0] != "node.read" || permissions[1] != "network.manage" {
+		t.Fatalf("self password update should preserve permissions: %#v", updated)
+	}
+	if _, err := loginTicket(cfg, map[string]any{"username": "ops", "password": "secret456"}); err == nil {
+		t.Fatal("previous self password should be rejected")
+	}
+	if _, err := loginTicket(cfg, map[string]any{"username": "ops", "password": "secret789"}); err != nil {
+		t.Fatalf("self-updated password should login: %v", err)
+	}
+	if _, err := updateAuthUserPassword(cfg, "ops", map[string]any{"username": "ops", "password": "secret890"}); err != nil {
+		t.Fatalf("user should update own password endpoint: %v", err)
+	}
+	if _, err := loginTicket(cfg, map[string]any{"username": "ops", "password": "secret890"}); err != nil {
+		t.Fatalf("password endpoint update should login: %v", err)
+	}
 	if _, err := updateAuthUser(cfg, "ops", map[string]any{"username": "ops", "permissions": []any{"node.read"}}); err == nil {
-		t.Fatal("non-root user should not update user information")
+		t.Fatal("non-root user should not change own permissions")
+	}
+	if _, err := updateAuthUser(cfg, "ops", map[string]any{"username": "root", "password": "secret000"}); err == nil {
+		t.Fatal("non-root user should not update other users")
 	}
 	if _, err := createAuthUser(cfg, "ops", map[string]any{"username": "guest", "password": "secret789"}); err == nil {
 		t.Fatal("non-root user should not create users")
@@ -314,7 +378,7 @@ func TestManagesAuthUsers(t *testing.T) {
 	if _, err := deleteAuthUser(cfg, asString(session["username"]), map[string]any{"username": "ops"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := loginTicket(cfg, map[string]any{"username": "ops", "password": "secret456"}); err == nil {
+	if _, err := loginTicket(cfg, map[string]any{"username": "ops", "password": "secret890"}); err == nil {
 		t.Fatal("deleted user should not login")
 	}
 }
@@ -426,7 +490,7 @@ func TestReadsARMCPUModelFromCPUInfo(t *testing.T) {
 
 func TestConsoleCommandReturnsOutputAndExitCode(t *testing.T) {
 	root := uniqueTempDir(t, "console")
-	result, err := runConsoleCommand(testConfig(root), map[string]any{
+	result, err := runConsoleCommand(context.Background(), testConfig(root), map[string]any{
 		"command": "printf 'hello'; printf 'warn' >&2; exit 7",
 		"cwd":     root,
 	})
@@ -447,7 +511,7 @@ func TestConsoleCommandTimeoutKillsNestedChild(t *testing.T) {
 	cfg.ConsoleTimeoutSeconds = 1
 
 	started := time.Now()
-	result, err := runConsoleCommand(cfg, map[string]any{
+	result, err := runConsoleCommand(context.Background(), cfg, map[string]any{
 		"command": "sh -c 'sleep 10'",
 		"cwd":     root,
 	})
@@ -459,6 +523,59 @@ func TestConsoleCommandTimeoutKillsNestedChild(t *testing.T) {
 	}
 	if time.Since(started) > 4*time.Second {
 		t.Fatalf("console timeout did not stop nested child quickly: %#v", result)
+	}
+}
+
+func TestConsoleCommandStopKillsNestedChild(t *testing.T) {
+	root := uniqueTempDir(t, "console-stop")
+	cfg := testConfig(root)
+	cfg.ConsoleTimeoutSeconds = 30
+	resultCh := make(chan map[string]any, 1)
+	errCh := make(chan error, 1)
+	runID := "test-stop-nested-child"
+
+	started := time.Now()
+	go func() {
+		result, err := runConsoleCommand(context.Background(), cfg, map[string]any{
+			"command": "sh -c 'sleep 10'",
+			"cwd":     root,
+			"runID":   runID,
+		})
+		if err != nil {
+			errCh <- err
+			return
+		}
+		resultCh <- result
+	}()
+
+	stopped := false
+	for attempt := 0; attempt < 50; attempt++ {
+		result, err := stopConsoleCommand(map[string]any{"runID": runID})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if asBool(result["stopped"]) {
+			stopped = true
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if !stopped {
+		t.Fatal("console stop did not find the active command")
+	}
+
+	select {
+	case err := <-errCh:
+		t.Fatal(err)
+	case result := <-resultCh:
+		if !asBool(result["stopped"]) || !asBool(result["cancelled"]) {
+			t.Fatalf("console command should report manual stop: %#v", result)
+		}
+	case <-time.After(4 * time.Second):
+		t.Fatal("console stop did not finish the command quickly")
+	}
+	if time.Since(started) > 4*time.Second {
+		t.Fatal("console stop did not stop nested child quickly")
 	}
 }
 
@@ -548,6 +665,113 @@ func TestNetworkConfigDryRunPreservesSecretWithoutReturningIt(t *testing.T) {
 	}
 	if got := readTrim(cfg.NetworkConfig); got != strings.TrimSpace(original) {
 		t.Fatalf("dry run should not write config: %q", got)
+	}
+}
+
+func TestFirewallConfigDryRunRendersNftablesRules(t *testing.T) {
+	root := uniqueTempDir(t, "firewall-write")
+	cfg := testConfig(root)
+	body := map[string]any{
+		"dryRun":           true,
+		"apply":            true,
+		"enabled":          true,
+		"defaultIncoming":  "drop",
+		"defaultOutgoing":  "accept",
+		"allowEstablished": true,
+		"allowLoopback":    true,
+		"allowPing":        true,
+		"rules": []any{
+			map[string]any{
+				"name":      "ssh",
+				"enabled":   true,
+				"direction": "in",
+				"action":    "accept",
+				"protocol":  "tcp",
+				"port":      "22",
+				"source":    "192.168.10.0/24",
+				"comment":   "admin ssh",
+			},
+			map[string]any{
+				"name":        "egress-dns",
+				"enabled":     true,
+				"direction":   "out",
+				"action":      "accept",
+				"protocol":    "udp",
+				"port":        "53",
+				"destination": "1.1.1.1",
+			},
+		},
+	}
+
+	result, err := updateFirewallConfig(cfg, body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !asBool(result["dryRun"]) || asBool(result["written"]) {
+		t.Fatalf("dry run flags mismatch: %#v", result)
+	}
+	rendered := asString(result["rendered"])
+	if !strings.Contains(rendered, "table inet dionysus_filter") || !strings.Contains(rendered, "tcp dport 22 accept") || !strings.Contains(rendered, "udp dport 53 accept") {
+		t.Fatalf("rendered nftables rules mismatch:\n%s", rendered)
+	}
+	applyResult := asMap(result["applyResult"])
+	if asString(applyResult["status"]) != "dry-run" || !strings.Contains(asString(applyResult["rendered"]), "dionysus_filter") {
+		t.Fatalf("dry-run apply mismatch: %#v", applyResult)
+	}
+	if fileExists(cfg.FirewallConfig) {
+		t.Fatal("dry run should not write firewall config")
+	}
+}
+
+func TestFirewallConfigWritesEnvAndRejectsBadRules(t *testing.T) {
+	root := uniqueTempDir(t, "firewall-env")
+	cfg := testConfig(root)
+	result, err := updateFirewallConfig(cfg, map[string]any{
+		"enabled":          true,
+		"defaultIncoming":  "reject",
+		"defaultOutgoing":  "accept",
+		"allowEstablished": true,
+		"allowLoopback":    true,
+		"allowPing":        false,
+		"rules": []any{
+			map[string]any{
+				"name":      "web",
+				"enabled":   true,
+				"direction": "in",
+				"action":    "accept",
+				"protocol":  "tcp",
+				"port":      "80,443",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !asBool(result["written"]) || !fileExists(cfg.FirewallConfig) {
+		t.Fatalf("firewall config should be written: %#v", result)
+	}
+	payload := firewallConfigPayload(cfg.FirewallConfig)
+	if payload["defaultIncoming"] != "reject" || len(asSlice(payload["rules"])) != 1 {
+		t.Fatalf("firewall payload mismatch: %#v", payload)
+	}
+	rendered := renderNftablesConfig(readFirewallConfig(cfg.FirewallConfig))
+	if !strings.Contains(rendered, "tcp dport { 80, 443 } accept") || !strings.Contains(rendered, "reject comment \"default reject\"") {
+		t.Fatalf("rendered saved firewall mismatch:\n%s", rendered)
+	}
+
+	if _, err := updateFirewallConfig(cfg, map[string]any{
+		"rules": []any{
+			map[string]any{"name": "bad", "protocol": "tcp", "port": "99999"},
+		},
+	}); err == nil {
+		t.Fatal("invalid firewall port should be rejected")
+	}
+	if _, err := updateFirewallConfig(cfg, map[string]any{
+		"rules": []any{
+			map[string]any{"name": "bad", "protocol": "any", "source": "not-an-address"},
+		},
+	}); err == nil {
+		t.Fatal("invalid firewall address should be rejected")
 	}
 }
 
@@ -669,6 +893,7 @@ func testConfig(root string) Config {
 		AuthUsername:     defaultAuthUsername,
 		WWWRoot:          root,
 		NetworkConfig:    filepath.Join(root, "network.env"),
+		FirewallConfig:   filepath.Join(root, "firewall.env"),
 		IntervalSeconds:  30,
 		RetentionDays:    7,
 		JWTTTLSeconds:    defaultJWTTTLSeconds,

@@ -3,7 +3,6 @@ package main
 import (
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -28,7 +27,7 @@ func ensureTargetOSRuntime(cfg Config) error {
 	if !dirExists("/run/systemd/system") {
 		missing = append(missing, "/run/systemd/system is missing")
 	}
-	if _, err := exec.LookPath("systemctl"); err != nil {
+	if !commandAvailable("systemctl") {
 		missing = append(missing, "systemctl is unavailable")
 	}
 

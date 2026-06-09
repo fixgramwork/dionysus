@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -258,7 +257,7 @@ func applyOllamaServiceAction(cfg Config, body map[string]any) (map[string]any, 
 		}, nil
 	}
 
-	output, err := exec.Command("systemctl", action, "ollama.service").CombinedOutput()
+	output, err := newCommand("systemctl", action, "ollama.service").CombinedOutput()
 	result := map[string]any{
 		"action":  action,
 		"command": command,
@@ -336,6 +335,14 @@ func pullOllamaModel(cfg Config, body map[string]any) (map[string]any, error) {
 	if err != nil {
 		return nil, err
 	}
+	readiness := ensureOllamaAPIReady(cfg)
+	if !asBool(readiness["apiReachable"]) {
+		return nil, fmt.Errorf(
+			"Ollama API is not reachable at %s: %s",
+			cfg.OllamaAPI,
+			firstNonEmpty(asString(readiness["error"]), asString(readiness["initialError"]), asString(readiness["reason"]), asString(readiness["status"])),
+		)
+	}
 	data, err := ollamaPostJSON(cfg.OllamaAPI, "/api/pull", map[string]any{
 		"name":   model,
 		"stream": false,
@@ -343,13 +350,114 @@ func pullOllamaModel(cfg Config, body map[string]any) (map[string]any, error) {
 	if err != nil {
 		return nil, err
 	}
+	installed := waitForOllamaModel(cfg.OllamaAPI, model, 10*time.Second)
+	status := firstNonEmpty(asString(data["status"]), "downloaded")
+	if installed {
+		status = "installed"
+	}
+	nextStatus := ollamaStatus(cfg)
+	if !installed {
+		installed = ollamaStatusHasModel(nextStatus, model)
+		if installed {
+			status = "installed"
+		}
+	}
 	return map[string]any{
-		"action": "pull",
-		"model":  model,
-		"status": firstNonEmpty(asString(data["status"]), "pulled"),
-		"api":    data,
-		"ollama": ollamaStatus(cfg),
+		"action":    "install",
+		"model":     model,
+		"status":    status,
+		"installed": installed,
+		"api":       data,
+		"readiness": readiness,
+		"service":   asMap(readiness["serviceStart"]),
+		"ollama":    nextStatus,
 	}, nil
+}
+
+func ensureOllamaAPIReady(cfg Config) map[string]any {
+	initial := ollamaGetJSON(cfg.OllamaAPI, "/api/version")
+	result := map[string]any{
+		"apiBase":      cfg.OllamaAPI,
+		"apiReachable": initial.Reachable,
+		"status":       "ready",
+	}
+	if initial.Reachable {
+		return result
+	}
+	result["status"] = "unreachable"
+	result["initialError"] = initial.Error
+
+	if cfg.DevAllowHost {
+		result["status"] = "dev-skip"
+		result["reason"] = "development host override is enabled; ollama.service start was not attempted"
+		return result
+	}
+
+	serviceStart, err := applyOllamaServiceAction(cfg, map[string]any{"action": "start"})
+	if err != nil {
+		result["status"] = "failed"
+		result["error"] = err.Error()
+		return result
+	}
+	result["serviceStart"] = serviceStart
+	if asString(serviceStart["status"]) == "failed" {
+		result["status"] = "failed"
+		result["error"] = firstNonEmpty(asString(serviceStart["error"]), "systemctl start ollama.service failed")
+		return result
+	}
+
+	if waitForOllamaAPI(cfg.OllamaAPI, 30*time.Second) {
+		result["status"] = "ready"
+		result["apiReachable"] = true
+		return result
+	}
+
+	result["status"] = "timeout"
+	result["error"] = "ollama.service started, but the HTTP API did not become reachable"
+	return result
+}
+
+func waitForOllamaAPI(base string, timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout)
+	for {
+		if ollamaGetJSON(base, "/api/version").Reachable {
+			return true
+		}
+		if time.Now().After(deadline) {
+			return false
+		}
+		time.Sleep(time.Second)
+	}
+}
+
+func waitForOllamaModel(base string, model string, timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout)
+	for {
+		tags := ollamaGetJSON(base, "/api/tags")
+		if ollamaTagsContainModel(tags, model) {
+			return true
+		}
+		if time.Now().After(deadline) {
+			return false
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+}
+
+func ollamaTagsContainModel(tags OllamaGet, model string) bool {
+	var names []string
+	for _, item := range asSlice(tags.Data["models"]) {
+		names = append(names, asString(asMap(item)["name"]))
+	}
+	return ollamaModelNameMatches(model, names)
+}
+
+func ollamaStatusHasModel(status map[string]any, model string) bool {
+	var names []string
+	for _, item := range asSlice(status["models"]) {
+		names = append(names, asString(asMap(item)["name"]))
+	}
+	return ollamaModelNameMatches(model, names)
 }
 
 func searchOllamaLibrary(query string) map[string]any {

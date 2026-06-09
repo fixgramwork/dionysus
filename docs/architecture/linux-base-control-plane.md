@@ -70,7 +70,7 @@ initramfs는 `/proc`, `/sys`, 네트워크, 부트 상태를 확인하고 rescue
 
 - initramfs 경로: `/init` 이 `dionysus-agent bootstrap`, `dionysus-network start`, `dionysus-services banner` 를 실행합니다.
 - rootfs 경로: `dionysus-network.service`, `dionysus-pvedaemon.service`, `dionysus-pveproxy.service`, `dionysus-llm-swap.service` 를 systemd가 관리합니다.
-- 인증 경로: `/api2/json/access/ticket` 은 `/etc/dionysus/pve.users.json` 에 저장된 운영자에게 JWT를 발급하고, 나머지 `/api2/json` API는 `Authorization: Bearer <jwt>` 를 요구합니다. `/api2/json/access/users` 계열 변경 API는 root 계정만 사용할 수 있으며, 웹 UI의 Users 페이지에서 계정 추가, 비밀번호 변경, 삭제, 사용자별 권한 설정을 처리합니다.
+- 인증 경로: `/api2/json/access/ticket` 은 `/etc/dionysus/pve.users.json` 에 저장된 운영자에게 JWT를 발급하고, 나머지 `/api2/json` API는 `Authorization: Bearer <jwt>` 를 요구합니다. `/api2/json/access/users` 계열 변경 API는 root 계정이 계정 추가, 삭제, 사용자별 권한 설정을 처리하고, 일반 사용자는 자기 계정의 비밀번호만 변경할 수 있습니다.
 - OS 상태 연결 경로: `/api2/json/nodes/localhost/status` 는 `/proc`, `/sys`, `/etc/os-release` 에서 읽은 운영체제 정보와 현재 `dionysusd proxy` 의 웹 리스너, 정적 루트, metrics DB, network config, JWT-auth 상태를 함께 제공합니다.
 - 네트워크 변경 경로: `/api2/json/nodes/localhost/network/config` 는 LAN/Wi-Fi 설정을 저장하고, 명시적 apply 요청에서만 `dionysus-network.service` 재시작을 요청합니다.
 - 패키지 관리 경로: `/api2/json/nodes/localhost/packages/status`, `/search`, `/install`, `/remove`, `/upgrade`, `/index/update` 는 `dpkg-query`, `apt-cache`, `apt-get` 을 셸 없이 직접 실행해 설치 수, 설치 목록, 검색 결과, 명시적 패키지 변경 작업을 웹 UI에 제공합니다.

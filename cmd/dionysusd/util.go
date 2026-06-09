@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -11,6 +12,62 @@ import (
 	"strings"
 	"time"
 )
+
+const defaultCommandPath = "/bin:/sbin:/usr/bin:/usr/sbin"
+
+func commandSearchPath() string {
+	path := os.Getenv("PATH")
+	if path == "" {
+		return defaultCommandPath
+	}
+	return path + string(os.PathListSeparator) + defaultCommandPath
+}
+
+func commandEnv() []string {
+	return append(os.Environ(), "PATH="+commandSearchPath())
+}
+
+func lookupCommand(command string) (string, error) {
+	if strings.Contains(command, string(os.PathSeparator)) {
+		return exec.LookPath(command)
+	}
+	for _, dir := range filepath.SplitList(commandSearchPath()) {
+		if dir == "" {
+			continue
+		}
+		candidate := filepath.Join(dir, command)
+		info, err := os.Stat(candidate)
+		if err == nil && !info.IsDir() && info.Mode()&0111 != 0 {
+			return candidate, nil
+		}
+	}
+	return "", exec.ErrNotFound
+}
+
+func commandAvailable(command string) bool {
+	_, err := lookupCommand(command)
+	return err == nil
+}
+
+func resolvedCommand(command string) string {
+	path, err := lookupCommand(command)
+	if err != nil {
+		return command
+	}
+	return path
+}
+
+func newCommand(command string, args ...string) *exec.Cmd {
+	cmd := exec.Command(resolvedCommand(command), args...)
+	cmd.Env = commandEnv()
+	return cmd
+}
+
+func newCommandContext(ctx context.Context, command string, args ...string) *exec.Cmd {
+	cmd := exec.CommandContext(ctx, resolvedCommand(command), args...)
+	cmd.Env = commandEnv()
+	return cmd
+}
 
 func readMeminfo(procRoot string) map[string]int64 {
 	values := map[string]int64{}
@@ -116,7 +173,7 @@ func envBoolValue(values map[string]string, key string, fallback bool) bool {
 }
 
 func commandOutput(command string, args ...string) (string, error) {
-	output, err := exec.Command(command, args...).Output()
+	output, err := newCommand(command, args...).Output()
 	if err != nil {
 		return "", err
 	}

@@ -3,7 +3,6 @@ package main
 import (
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -129,7 +128,7 @@ func applyNetworkService(cfg Config, dryRun bool) map[string]any {
 			"reason":  "development host override is enabled; service restart was not executed",
 		}
 	}
-	output, err := exec.Command("systemctl", "restart", "dionysus-network.service").CombinedOutput()
+	output, err := newCommand("systemctl", "restart", "dionysus-network.service").CombinedOutput()
 	if err != nil {
 		return map[string]any{
 			"dryRun": false,
