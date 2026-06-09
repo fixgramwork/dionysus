@@ -1462,7 +1462,51 @@
       {/if}
 
       {#if activeTab === 'overview'}
-        <section class="grid two">
+        <section class="overview-console grid two">
+          <div class="firewall-hero overview-hero">
+            <div class="firewall-hero-main">
+              <span class="section-kicker">Node / Operator overview</span>
+              <div class="firewall-hero-title">
+                <Server size={26} />
+                <div>
+                  <h1>{os.hostname || 'Dionysus Node'}</h1>
+                  <p>{controlPlane.stack || os.prettyName || 'control plane status'}</p>
+                </div>
+              </div>
+              <div class="firewall-summary-grid">
+                <div class={`metric-card ${status ? 'guarded' : 'disabled'}`}>
+                  <span>Runtime</span>
+                  <strong>{controlPlane.runtimeMode || 'unknown'}</strong>
+                </div>
+                <div class="metric-card">
+                  <span>CPU</span>
+                  <strong>{cpuUsageText}</strong>
+                </div>
+                <div class="metric-card">
+                  <span>RAM</span>
+                  <strong>{formatPercent(memoryUsedPercent)}</strong>
+                </div>
+                <div class="metric-card">
+                  <span>Services</span>
+                  <strong>{services.length}</strong>
+                </div>
+              </div>
+            </div>
+
+            <div class="firewall-companion overview-companion" aria-hidden="true">
+              <div class="login-character overview-guide" class:watching-form={loading || liveLoading} class:privacy-mode={memoryUsedPercent >= 80 || swapUsedPercent >= 40}>
+                <div class="character-head">
+                  <div class="character-face">
+                    <span></span>
+                    <span></span>
+                  </div>
+                </div>
+                <div class="character-body"></div>
+                <div class="character-base"></div>
+              </div>
+            </div>
+          </div>
+
           <article class="panel">
             <h2>Node</h2>
             <dl class="facts">
