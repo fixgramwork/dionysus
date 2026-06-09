@@ -1,5 +1,5 @@
 <script>
-  import { onMount } from 'svelte';
+  import { onMount, tick } from 'svelte';
   import {
     Activity,
     AlertTriangle,
@@ -9,6 +9,7 @@
     KeyRound,
     LogIn,
     LogOut,
+    Package,
     Pencil,
     Play,
     RefreshCw,
@@ -29,12 +30,16 @@
 
   const tabs = [
     { id: 'overview', label: 'Overview', icon: Server },
+    { id: 'systemd', label: 'Systemd', icon: Activity },
     { id: 'network', label: 'Network', icon: Wifi },
+    { id: 'packages', label: 'Packages', icon: Package },
     { id: 'llm', label: 'Local LLM', icon: Cpu },
-    { id: 'services', label: 'Services', icon: Activity },
+    { id: 'services', label: 'Services', icon: Settings },
     { id: 'users', label: 'Users', icon: User },
     { id: 'console', label: 'Console', icon: Database }
   ];
+
+  const aptSearchPageSize = 10;
 
   let activeTab = 'overview';
   let authenticated = !!readToken();
@@ -43,6 +48,8 @@
   let loginPassword = '';
   let loginLoading = false;
   let loginError = '';
+  let alerts = [];
+  let nextAlertID = 1;
   let loading = false;
   let liveLoading = false;
   let error = '';
@@ -50,9 +57,20 @@
   let version = null;
   let status = null;
   let services = [];
+  let systemd = null;
+  let systemdLoading = false;
   let network = null;
   let networkDraft = null;
   let previousNetworkSample = null;
+  let aptState = null;
+  let aptSearchQuery = 'curl';
+  let aptSearchResults = [];
+  let aptSearchPage = 1;
+  let aptSearchWarning = '';
+  let aptSearchLoading = false;
+  let aptActionLoading = '';
+  let aptActionPackage = '';
+  let aptIndexUpdating = false;
   let ollama = null;
   let history = [];
   let ollamaActionLoading = '';
@@ -65,14 +83,20 @@
   let modelRunning = '';
   let modelStopping = '';
   let consoleLines = [];
-  let consoleCommand = 'uname -a';
+  let consoleCommand = '';
   let consoleCwd = '/';
   let consoleRunning = false;
+  let activeConsoleCommand = null;
+  let consoleElapsedMillis = 0;
+  let consoleElapsedTimer = null;
+  let terminalInput = null;
+  let terminalViewport = null;
   let terminalEntries = [];
   let users = [];
   let permissionOptions = [
     { id: 'node.read', label: 'Node status', description: 'Read node status, metrics, and inventory' },
     { id: 'network.manage', label: 'Network', description: 'Preview, save, and apply network settings' },
+    { id: 'packages.manage', label: 'Packages', description: 'Install, remove, and upgrade APT packages' },
     { id: 'llm.manage', label: 'Local LLM', description: 'Read and apply local LLM runtime tuning' },
     { id: 'services.manage', label: 'Services', description: 'Read service state and perform service operations' },
     { id: 'console.run', label: 'Console', description: 'Run commands through the web console' }
@@ -96,14 +120,45 @@
     ].slice(0, 80);
   }
 
+  function showErrorAlert(message, title = 'Error') {
+    const text = String(message || '').trim();
+    if (!text) return;
+    const id = nextAlertID;
+    nextAlertID += 1;
+    alerts = [
+      { id, title, message: text, at: new Date().toLocaleTimeString() },
+      ...alerts
+    ].slice(0, 4);
+    window.setTimeout(() => dismissAlert(id), 7000);
+  }
+
+  function dismissAlert(id) {
+    alerts = alerts.filter((alert) => alert.id !== id);
+  }
+
+  function setUserError(message) {
+    userError = message;
+    showErrorAlert(message, 'Users');
+  }
+
   function resetNodeState() {
     version = null;
     status = null;
     services = [];
+    systemd = null;
+    systemdLoading = false;
     users = [];
     network = null;
     networkDraft = null;
     previousNetworkSample = null;
+    aptState = null;
+    aptSearchResults = [];
+    aptSearchPage = 1;
+    aptSearchWarning = '';
+    aptSearchLoading = false;
+    aptActionLoading = '';
+    aptActionPackage = '';
+    aptIndexUpdating = false;
     ollama = null;
     history = [];
     ollamaActionLoading = '';
@@ -128,6 +183,7 @@
     error = err.message;
     if (log) {
       pushConsole('error', err.message);
+      showErrorAlert(err.message, 'Console error');
     }
   }
 
@@ -146,6 +202,7 @@
       authenticated = false;
       loginError = err.message;
       error = err.message;
+      showErrorAlert(err.message, 'Sign in failed');
     } finally {
       loginLoading = false;
     }
@@ -164,11 +221,13 @@
     loading = true;
     error = '';
     try {
-      const [nextVersion, nextStatus, nextServices, nextNetwork, nextOllama, nextHistory] = await Promise.all([
+      const [nextVersion, nextStatus, nextServices, nextSystemd, nextNetwork, nextPackages, nextOllama, nextHistory] = await Promise.all([
         api('/api2/json/version'),
         api('/api2/json/nodes/localhost/status'),
         api('/api2/json/nodes/localhost/services'),
+        api('/api2/json/nodes/localhost/systemd/status'),
         api('/api2/json/nodes/localhost/network/status'),
+        api('/api2/json/nodes/localhost/packages/status'),
         api('/api2/json/nodes/localhost/ollama/status'),
         api('/api2/json/nodes/localhost/ollama/history?limit=120')
       ]);
@@ -181,10 +240,12 @@
       session = nextSession;
       status = nextStatus;
       services = nextServices || [];
+      systemd = nextSystemd;
       users = nextUsers || [];
       permissionOptions = nextPermissions || permissionOptions;
       network = withNetworkRates(nextNetwork);
       networkDraft = clone(nextNetwork?.config);
+      aptState = nextPackages;
       ollama = nextOllama;
       history = nextHistory || [];
       savedAt = new Date().toLocaleTimeString();
@@ -251,6 +312,21 @@
     }
   }
 
+  async function refreshSystemdStatus() {
+    if (systemdLoading) return;
+    systemdLoading = true;
+    try {
+      systemd = await api('/api2/json/nodes/localhost/systemd/status');
+      savedAt = new Date().toLocaleTimeString();
+      const state = systemd?.summary?.state || systemd?.status || 'unknown';
+      pushConsole(systemd?.status === 'ok' ? 'info' : 'warn', `systemctl status ${state}`);
+    } catch (err) {
+      handleAPIError(err);
+    } finally {
+      systemdLoading = false;
+    }
+  }
+
   async function submitNetwork(dryRun, apply) {
     if (!networkDraft) return;
     try {
@@ -276,6 +352,123 @@
       await refresh();
     } catch (err) {
       handleAPIError(err);
+    }
+  }
+
+  async function refreshAptState() {
+    aptState = await api('/api2/json/nodes/localhost/packages/status');
+    savedAt = new Date().toLocaleTimeString();
+  }
+
+  function compactPackageOutput(value) {
+    const lines = String(value || '').trim().split('\n').filter(Boolean);
+    return lines.slice(-3).join(' / ').slice(0, 260);
+  }
+
+  function pushAptResult(result) {
+    const packageName = result.package ? ` ${result.package}` : '';
+    const level = result.status === 'ok' ? 'info' : result.status === 'dev-skip' ? 'warn' : 'error';
+    pushConsole(level, `apt ${result.action}${packageName}: ${result.status}`);
+    const output = compactPackageOutput(result.stderr || result.stdout);
+    if (output) {
+      pushConsole(level, output);
+    }
+    if (level === 'error') {
+      showErrorAlert(output || `apt ${result.action}${packageName} failed`, 'Package action failed');
+    }
+  }
+
+  async function searchAptPackages() {
+    if (aptSearchLoading) return;
+    aptSearchLoading = true;
+    aptSearchWarning = '';
+    try {
+      const result = await api(`/api2/json/nodes/localhost/packages/search?q=${encodeURIComponent(aptSearchQuery.trim())}`);
+      aptSearchResults = result.results || [];
+      aptSearchPage = 1;
+      aptSearchWarning = result.error || '';
+      if (aptSearchWarning) {
+        showErrorAlert(aptSearchWarning, 'Package search');
+      }
+      pushConsole('info', `apt search results=${aptSearchResults.length}`);
+    } catch (err) {
+      aptSearchResults = [];
+      aptSearchPage = 1;
+      aptSearchWarning = err.message;
+      handleAPIError(err);
+    } finally {
+      aptSearchLoading = false;
+    }
+  }
+
+  async function refreshAptIndex() {
+    if (aptIndexUpdating || aptActionLoading) return;
+    aptIndexUpdating = true;
+    try {
+      const result = await postJSON('/api2/json/nodes/localhost/packages/index/update', {});
+      pushAptResult(result);
+      await refreshAptState();
+    } catch (err) {
+      handleAPIError(err);
+    } finally {
+      aptIndexUpdating = false;
+    }
+  }
+
+  async function installAptPackage(name) {
+    const packageName = String(name || '').trim();
+    if (!packageName || aptActionLoading) return;
+    if (!window.confirm(`Install package ${packageName}?`)) return;
+    aptActionLoading = 'install';
+    aptActionPackage = packageName;
+    try {
+      const result = await postJSON('/api2/json/nodes/localhost/packages/install', { name: packageName });
+      pushAptResult(result);
+      await refreshAptState();
+      if (aptSearchQuery.trim()) {
+        await searchAptPackages();
+      }
+    } catch (err) {
+      handleAPIError(err);
+    } finally {
+      aptActionLoading = '';
+      aptActionPackage = '';
+    }
+  }
+
+  async function removeAptPackage(name) {
+    const packageName = String(name || '').trim();
+    if (!packageName || aptActionLoading) return;
+    if (!window.confirm(`Remove package ${packageName}?`)) return;
+    aptActionLoading = 'remove';
+    aptActionPackage = packageName;
+    try {
+      const result = await postJSON('/api2/json/nodes/localhost/packages/remove', { name: packageName });
+      pushAptResult(result);
+      await refreshAptState();
+    } catch (err) {
+      handleAPIError(err);
+    } finally {
+      aptActionLoading = '';
+      aptActionPackage = '';
+    }
+  }
+
+  async function upgradeAptPackage(name) {
+    const packageName = String(name || '').trim();
+    if (!packageName || aptActionLoading) return;
+    if (!window.confirm(`Update package ${packageName}?`)) return;
+    aptActionLoading = 'upgrade';
+    aptActionPackage = packageName;
+    try {
+      const result = await postJSON('/api2/json/nodes/localhost/packages/upgrade', { name: packageName });
+      pushAptResult(result);
+      await refreshAptState();
+    } catch (err) {
+      handleAPIError(err);
+    } finally {
+      aptActionLoading = '';
+      aptActionPackage = '';
     }
   }
 
@@ -308,6 +501,9 @@
     try {
       const result = await postJSON('/api2/json/nodes/localhost/ollama/service', { action });
       pushConsole(result.status === 'failed' ? 'error' : 'info', `ollama.service ${result.status}`);
+      if (result.status === 'failed') {
+        showErrorAlert(`ollama.service ${action} failed`, 'Ollama service');
+      }
       await refreshOllamaState();
     } catch (err) {
       handleAPIError(err);
@@ -325,6 +521,9 @@
       modelSearchResults = result.results || [];
       modelSearchSource = result.source || '';
       modelSearchWarning = result.warning || '';
+      if (modelSearchWarning) {
+        showErrorAlert(modelSearchWarning, 'Model search');
+      }
       pushConsole('info', `ollama model search results=${modelSearchResults.length} source=${modelSearchSource || 'unknown'}`);
     } catch (err) {
       modelSearchResults = [];
@@ -393,19 +592,23 @@
     const command = consoleCommand.trim();
     if (!command || consoleRunning) return;
     const cwd = consoleCwd.trim() || '/';
+    consoleCommand = '';
     consoleRunning = true;
+    startConsoleProgress(command, cwd);
     try {
-      const result = await postJSON('/api2/json/nodes/localhost/console/exec', { command, cwd });
+      const result = await runTerminalCommand(command, cwd);
       terminalEntries = [
+        ...terminalEntries,
         {
           at: new Date().toLocaleTimeString(),
           ...result
-        },
-        ...terminalEntries
-      ].slice(0, 20);
+        }
+      ].slice(-20);
       pushConsole(result.exitCode === 0 ? 'info' : 'warn', `command exited ${result.exitCode}: ${command}`);
+      await scrollTerminalToBottom();
     } catch (err) {
       terminalEntries = [
+        ...terminalEntries,
         {
           at: new Date().toLocaleTimeString(),
           command,
@@ -414,13 +617,78 @@
           stderr: err.message,
           stdout: '',
           timedOut: false
-        },
-        ...terminalEntries
-      ].slice(0, 20);
+        }
+      ].slice(-20);
       handleAPIError(err);
+      await scrollTerminalToBottom();
     } finally {
+      stopConsoleProgress();
       consoleRunning = false;
+      focusTerminalInput();
     }
+  }
+
+  async function runTerminalCommand(command, cwd) {
+    if (isChangeDirectoryCommand(command)) {
+      return changeTerminalDirectory(command, cwd);
+    }
+    return postJSON('/api2/json/nodes/localhost/console/exec', { command, cwd });
+  }
+
+  function isChangeDirectoryCommand(command) {
+    if (command !== 'cd' && !command.startsWith('cd ')) return false;
+    return !/[;&|<>`$()]/.test(command.slice(2));
+  }
+
+  async function changeTerminalDirectory(command, cwd) {
+    const target = command === 'cd' ? '~' : command.slice(2).trim() || '~';
+    const result = await postJSON('/api2/json/nodes/localhost/console/exec', {
+      command: `cd ${target} && pwd -P`,
+      cwd
+    });
+    if (result.exitCode === 0) {
+      const nextCwd = String(result.stdout || '').trim().split('\n').filter(Boolean).pop();
+      if (nextCwd) {
+        consoleCwd = nextCwd;
+      }
+      return { ...result, command, cwd, stdout: '' };
+    }
+    return { ...result, command, cwd };
+  }
+
+  function focusTerminalInput() {
+    window.setTimeout(() => terminalInput?.focus(), 0);
+  }
+
+  async function scrollTerminalToBottom() {
+    await tick();
+    if (terminalViewport) {
+      terminalViewport.scrollTop = terminalViewport.scrollHeight;
+    }
+  }
+
+  function startConsoleProgress(command, cwd) {
+    stopConsoleProgress();
+    const startedAt = Date.now();
+    activeConsoleCommand = {
+      command,
+      cwd,
+      at: new Date(startedAt).toLocaleTimeString(),
+      startedAt
+    };
+    consoleElapsedMillis = 0;
+    consoleElapsedTimer = window.setInterval(() => {
+      consoleElapsedMillis = Date.now() - startedAt;
+    }, 500);
+  }
+
+  function stopConsoleProgress() {
+    if (consoleElapsedTimer) {
+      window.clearInterval(consoleElapsedTimer);
+      consoleElapsedTimer = null;
+    }
+    activeConsoleCommand = null;
+    consoleElapsedMillis = 0;
   }
 
   async function refreshUsers() {
@@ -448,13 +716,23 @@
     userError = '';
     if (!canManageUsers) {
       showAddUser = false;
-      userError = '권한 부족: root 계정만 사용자를 추가할 수 있습니다.';
+      setUserError('권한 부족: root 계정만 사용자를 추가할 수 있습니다.');
       return;
     }
-    if (!showAddUser) {
-      resetNewUser();
+    editingUsername = '';
+    resetNewUser();
+    showAddUser = true;
+  }
+
+  function cancelAddUser() {
+    showAddUser = false;
+    resetNewUser();
+  }
+
+  function handleModalKeydown(event, closeModal) {
+    if (event.key === 'Escape' && !userLoading) {
+      closeModal();
     }
-    showAddUser = !showAddUser;
   }
 
   function permissionLabel(id) {
@@ -491,9 +769,10 @@
     userError = '';
     if (!canManageUsers) {
       editingUsername = '';
-      userError = '권한 부족: root 계정만 사용자 비밀번호와 권한을 수정할 수 있습니다.';
+      setUserError('권한 부족: root 계정만 사용자 비밀번호와 권한을 수정할 수 있습니다.');
       return;
     }
+    showAddUser = false;
     editingUsername = user.username;
     userEditDraft = {
       username: user.username,
@@ -521,12 +800,12 @@
   async function createUser() {
     userError = '';
     if (!canManageUsers) {
-      userError = 'only root can manage users';
+      setUserError('only root can manage users');
       return;
     }
     const username = newUser.username.trim();
     if (newUser.password !== newUser.confirm) {
-      userError = 'password confirmation does not match';
+      setUserError('password confirmation does not match');
       return;
     }
     userLoading = true;
@@ -551,18 +830,18 @@
   async function updateUser() {
     userError = '';
     if (!canManageUsers) {
-      userError = 'only root can manage users';
+      setUserError('only root can manage users');
       return;
     }
     if (!userEditDraft.username) return;
     const password = userEditDraft.password;
     if (password || userEditDraft.confirm) {
       if (password !== userEditDraft.confirm) {
-        userError = 'password confirmation does not match';
+        setUserError('password confirmation does not match');
         return;
       }
       if (password.length < 8) {
-        userError = 'password must be at least 8 characters';
+        setUserError('password must be at least 8 characters');
         return;
       }
     }
@@ -591,7 +870,7 @@
     if (!window.confirm(`Delete user ${username}?`)) return;
     userError = '';
     if (!canManageUsers) {
-      userError = 'only root can manage users';
+      setUserError('only root can manage users');
       return;
     }
     userLoading = true;
@@ -660,6 +939,18 @@
     return new Date(timestamp * 1000).toLocaleString();
   }
 
+  function formatMillis(value) {
+    const millis = Math.max(0, Number(value || 0));
+    if (millis < 1000) return `${Math.round(millis)} ms`;
+    const totalSeconds = Math.floor(millis / 1000);
+    const minutes = Math.floor(totalSeconds / 60);
+    const seconds = totalSeconds % 60;
+    if (minutes > 0) {
+      return `${minutes}m ${String(seconds).padStart(2, '0')}s`;
+    }
+    return `${seconds}s`;
+  }
+
   function formatAPIDate(value) {
     if (!value) return '-';
     const date = new Date(value);
@@ -696,8 +987,8 @@
   }
 
   function stateClass(state) {
-    if (state === 'active' || state === 'ready' || state === 'api-online' || state === 'restarted') return 'ok';
-    if (state === 'failed' || state === 'missing') return 'bad';
+    if (state === 'active' || state === 'ready' || state === 'api-online' || state === 'restarted' || state === 'running' || state === 'online' || state === 'ok') return 'ok';
+    if (state === 'failed' || state === 'missing' || state === 'timeout' || state === 'degraded') return 'bad';
     return 'warn';
   }
 
@@ -706,6 +997,16 @@
   $: cpu = status?.cpu || {};
   $: os = status?.os || {};
   $: controlPlane = status?.controlPlane || {};
+  $: systemdSummary = systemd?.summary || {};
+  $: installedAptPackages = aptState?.packages || [];
+  $: aptTools = aptState?.tools || {};
+  $: aptSearchPageCount = Math.max(1, Math.ceil(aptSearchResults.length / aptSearchPageSize));
+  $: if (aptSearchPage > aptSearchPageCount) aptSearchPage = aptSearchPageCount;
+  $: if (aptSearchPage < 1) aptSearchPage = 1;
+  $: aptSearchStartIndex = (aptSearchPage - 1) * aptSearchPageSize;
+  $: aptSearchEndIndex = Math.min(aptSearchStartIndex + aptSearchPageSize, aptSearchResults.length);
+  $: paginatedAptSearchResults = aptSearchResults.slice(aptSearchStartIndex, aptSearchEndIndex);
+  $: aptSearchPageNumbers = Array.from({ length: aptSearchPageCount }, (_, index) => index + 1);
   $: kv = ollama?.kvCache || {};
   $: downloadedModels = ollama?.models || [];
   $: loadedModels = ollama?.loadedModels || [];
@@ -724,7 +1025,10 @@
       refresh();
     }
     const interval = window.setInterval(refreshLive, 2000);
-    return () => window.clearInterval(interval);
+    return () => {
+      window.clearInterval(interval);
+      stopConsoleProgress();
+    };
   });
 </script>
 
@@ -761,6 +1065,28 @@
       {/if}
     </div>
   </header>
+
+  {#if alerts.length > 0}
+    <div class="alert-stack" aria-live="assertive" aria-atomic="false">
+      {#each alerts as alert (alert.id)}
+        <section class="app-alert" role="alert">
+          <div class="alert-icon">
+            <AlertTriangle size={18} />
+          </div>
+          <div class="alert-body">
+            <div class="alert-title">
+              <strong>{alert.title}</strong>
+              <span>{alert.at}</span>
+            </div>
+            <p>{alert.message}</p>
+          </div>
+          <button class="alert-close" type="button" on:click={() => dismissAlert(alert.id)} title="Dismiss alert">
+            <X size={15} />
+          </button>
+        </section>
+      {/each}
+    </div>
+  {/if}
 
   {#if !authenticated}
     <main class="login-screen">
@@ -853,7 +1179,7 @@
               <div class="arc-gauge">
                 <svg viewBox="0 0 188 108" role="img" aria-label={`CPU usage ${cpuUsageText}`}>
                   <path class="gauge-track" d="M 18 90 A 76 76 0 0 1 170 90" pathLength="100" />
-                  <path class="gauge-fill cpu" class:idle={cpuReady && cpuUsedPercent === 0} d="M 18 90 A 76 76 0 0 1 170 90" pathLength="100" stroke-dasharray={`${cpuGaugePercent} 100`} />
+                  <path class="gauge-fill cpu" class:idle={cpuReady && cpuUsedPercent === 0} d="M 18 90 A 76 76 0 0 1 170 90" pathLength="100" style={`stroke-dasharray: ${cpuGaugePercent} 100;`} />
                 </svg>
                 <div class="gauge-readout">
                   <span>CPU</span>
@@ -881,7 +1207,7 @@
               <div class="arc-gauge">
                 <svg viewBox="0 0 188 108" role="img" aria-label={`RAM usage ${formatPercent(memoryUsedPercent)}`}>
                   <path class="gauge-track" d="M 18 90 A 76 76 0 0 1 170 90" pathLength="100" />
-                  <path class="gauge-fill ram" d="M 18 90 A 76 76 0 0 1 170 90" pathLength="100" stroke-dasharray={`${clampPercent(memoryUsedPercent)} 100`} />
+                  <path class="gauge-fill ram" d="M 18 90 A 76 76 0 0 1 170 90" pathLength="100" style={`stroke-dasharray: ${clampPercent(memoryUsedPercent)} 100;`} />
                 </svg>
                 <div class="gauge-readout">
                   <span>RAM</span>
@@ -916,6 +1242,60 @@
                 <tr><th>Network config</th><td>{controlPlane.networkConfig || '-'}</td></tr>
               </tbody>
             </table>
+          </article>
+        </section>
+      {:else if activeTab === 'systemd'}
+        <section class="grid two">
+          <article class="panel">
+            <div class="panel-title">
+              <h2>Systemctl Status</h2>
+              <button on:click={refreshSystemdStatus} disabled={systemdLoading || loading} title="Refresh systemctl status">
+                <RefreshCw size={15} class={systemdLoading ? 'spin' : ''} />
+                Refresh
+              </button>
+            </div>
+            <dl class="facts">
+              <div><dt>Command</dt><dd><code>{systemd?.command || 'systemctl status --no-pager --lines=80'}</code></dd></div>
+              <div><dt>Status</dt><dd><span class={stateClass(systemd?.status)}>{systemd?.status || 'unknown'}</span></dd></div>
+              <div><dt>Available</dt><dd><span class={systemd?.available ? 'ok' : 'bad'}>{systemd?.available ? 'yes' : 'no'}</span></dd></div>
+              <div><dt>Exit code</dt><dd>{systemd?.exitCode ?? '-'}</dd></div>
+              <div><dt>Duration</dt><dd>{formatMillis(systemd?.durationMillis)}</dd></div>
+            </dl>
+            {#if systemd?.status && systemd.status !== 'ok'}
+              <div class="notice systemd-notice">
+                <AlertTriangle size={16} />
+                <span>{systemd?.stderr || systemd?.stdout || 'systemctl status did not complete successfully'}</span>
+              </div>
+            {/if}
+          </article>
+
+          <article class="panel">
+            <h2>Manager Summary</h2>
+            <dl class="facts">
+              <div><dt>Host</dt><dd>{systemdSummary.host || os.hostname || '-'}</dd></div>
+              <div><dt>State</dt><dd><span class={stateClass(systemdSummary.state || systemd?.status)}>{systemdSummary.stateText || systemdSummary.state || '-'}</span></dd></div>
+              <div><dt>Units</dt><dd>{systemdSummary.units || '-'}</dd></div>
+              <div><dt>Jobs</dt><dd>{systemdSummary.jobs || '-'}</dd></div>
+              <div><dt>Failed</dt><dd>{systemdSummary.failed || '-'}</dd></div>
+              <div><dt>Since</dt><dd>{systemdSummary.since || '-'}</dd></div>
+              <div><dt>systemd</dt><dd>{systemdSummary.systemd || '-'}</dd></div>
+              <div><dt>CGroup</dt><dd>{systemdSummary.cgroup || '-'}</dd></div>
+            </dl>
+          </article>
+
+          <article class="panel wide">
+            <h2>Raw Output</h2>
+            <div class="command-output">
+              {#if systemd?.stdout}
+                <pre>{systemd.stdout}{systemd.stdoutTruncated ? '\n[stdout truncated]' : ''}</pre>
+              {/if}
+              {#if systemd?.stderr}
+                <pre class="stderr">{systemd.stderr}{systemd.stderrTruncated ? '\n[stderr truncated]' : ''}</pre>
+              {/if}
+              {#if !systemd?.stdout && !systemd?.stderr}
+                <span>No systemctl status output loaded.</span>
+              {/if}
+            </div>
           </article>
         </section>
       {:else if activeTab === 'network'}
@@ -1000,6 +1380,153 @@
               <button on:click={() => applyNetworkOnly(true)}><Settings size={15} />Preview Restart</button>
               <button on:click={() => applyNetworkOnly(false)}><Play size={15} />Restart Network</button>
             </div>
+          </article>
+        </section>
+      {:else if activeTab === 'packages'}
+        <section class="grid two">
+          <article class="panel">
+            <div class="panel-title">
+              <h2>APT Packages</h2>
+              <button on:click={refreshAptState} disabled={loading || !!aptActionLoading} title="Refresh package list">
+                <RefreshCw size={15} />
+                Refresh
+              </button>
+            </div>
+            <dl class="facts">
+              <div><dt>Installed</dt><dd>{aptState?.installedCount ?? installedAptPackages.length} packages</dd></div>
+              <div><dt>Upgradeable</dt><dd>{aptState?.upgradeableCount || 0} packages</dd></div>
+              <div><dt>APT tools</dt><dd><span class={aptState?.available ? 'ok' : 'bad'}>{aptState?.available ? 'available' : 'missing'}</span></dd></div>
+              <div><dt>dpkg-query</dt><dd><span class={aptTools.dpkgQuery ? 'ok' : 'bad'}>{aptTools.dpkgQuery ? 'ready' : 'missing'}</span></dd></div>
+              <div><dt>apt-cache</dt><dd><span class={aptTools.aptCache ? 'ok' : 'bad'}>{aptTools.aptCache ? 'ready' : 'missing'}</span></dd></div>
+              <div><dt>apt-get</dt><dd><span class={aptTools.aptGet ? 'ok' : 'bad'}>{aptTools.aptGet ? 'ready' : 'missing'}</span></dd></div>
+            </dl>
+            {#if aptState?.error || aptState?.upgradeableError}
+              <div class="notice package-notice">
+                <AlertTriangle size={16} />
+                <span>{aptState?.error || aptState?.upgradeableError}</span>
+              </div>
+            {/if}
+          </article>
+
+          <article class="panel">
+            <div class="panel-title">
+              <h2>Find and Install</h2>
+              <button on:click={refreshAptIndex} disabled={aptIndexUpdating || !!aptActionLoading} title="Refresh APT package index">
+                <RefreshCw size={15} class={aptIndexUpdating ? 'spin' : ''} />
+                Refresh Index
+              </button>
+            </div>
+            <form class="package-search" on:submit|preventDefault={searchAptPackages}>
+              <label>
+                <span>Search</span>
+                <input bind:value={aptSearchQuery} placeholder="curl, nginx, sqlite3" />
+              </label>
+              <button class="primary" type="submit" disabled={aptSearchLoading}>
+                <Search size={15} class={aptSearchLoading ? 'spin' : ''} />
+                Search
+              </button>
+              <button type="button" on:click={() => installAptPackage(aptSearchQuery)} disabled={!aptSearchQuery.trim() || !!aptActionLoading}>
+                <Download size={15} />
+                Install
+              </button>
+            </form>
+            {#if aptSearchWarning}
+              <div class="notice package-notice">
+                <AlertTriangle size={16} />
+                <span>{aptSearchWarning}</span>
+              </div>
+            {/if}
+            <table class="model-table package-table">
+              <thead><tr><th>Package</th><th>State</th><th>Actions</th></tr></thead>
+              <tbody>
+                {#if aptSearchResults.length === 0}
+                  <tr><td class="table-empty" colspan="3">No search results</td></tr>
+                {:else}
+                  {#each paginatedAptSearchResults as result (result.name)}
+                    <tr>
+                      <td class="model-name">
+                        {result.name}
+                        <small>{result.description || '-'}</small>
+                      </td>
+                      <td>
+                        {#if result.installed}
+                          <span class={result.upgradeable ? 'warn' : 'ok'}>{result.upgradeable ? 'update available' : 'installed'}</span>
+                          {#if result.installedVersion}
+                            <small>{result.installedVersion}</small>
+                          {/if}
+                        {:else}
+                          <span class="warn">not installed</span>
+                        {/if}
+                      </td>
+                      <td>
+                        <button on:click={() => installAptPackage(result.name)} disabled={result.installed || !!aptActionLoading} title="Install package">
+                          <Download size={15} />
+                          {aptActionLoading === 'install' && aptActionPackage === result.name ? 'Installing' : 'Install'}
+                        </button>
+                      </td>
+                    </tr>
+                  {/each}
+                {/if}
+              </tbody>
+            </table>
+            {#if aptSearchResults.length > aptSearchPageSize}
+              <div class="pager" aria-label="Package search pages">
+                <span>{aptSearchStartIndex + 1}-{aptSearchEndIndex} of {aptSearchResults.length}</span>
+                <div class="pager-pages">
+                  {#each aptSearchPageNumbers as page}
+                    <button
+                      type="button"
+                      class:active={aptSearchPage === page}
+                      aria-current={aptSearchPage === page ? 'page' : undefined}
+                      on:click={() => (aptSearchPage = page)}
+                    >
+                      {page}
+                    </button>
+                  {/each}
+                </div>
+              </div>
+            {/if}
+          </article>
+
+          <article class="panel wide">
+            <div class="panel-title">
+              <h2>Installed Package List</h2>
+              <span class="model-source">{aptState?.installedCount ?? installedAptPackages.length} installed</span>
+            </div>
+            <table class="model-table package-table">
+              <thead><tr><th>Package</th><th>Version</th><th>Architecture</th><th>State</th><th>Actions</th></tr></thead>
+              <tbody>
+                {#if installedAptPackages.length === 0}
+                  <tr><td class="table-empty" colspan="5">No installed packages detected</td></tr>
+                {:else}
+                  {#each installedAptPackages as pkg (pkg.name)}
+                    <tr>
+                      <td class="model-name">{pkg.name}</td>
+                      <td>{pkg.version || '-'}</td>
+                      <td>{pkg.architecture || '-'}</td>
+                      <td>
+                        <span class={pkg.upgradeable ? 'warn' : 'ok'}>{pkg.upgradeable ? 'update available' : 'current'}</span>
+                        {#if pkg.candidateVersion}
+                          <small>candidate {pkg.candidateVersion}</small>
+                        {/if}
+                      </td>
+                      <td>
+                        <div class="model-actions">
+                          <button on:click={() => upgradeAptPackage(pkg.name)} disabled={!pkg.upgradeable || !!aptActionLoading} title="Update package">
+                            <RefreshCw size={15} class={aptActionLoading === 'upgrade' && aptActionPackage === pkg.name ? 'spin' : ''} />
+                            Update
+                          </button>
+                          <button on:click={() => removeAptPackage(pkg.name)} disabled={!!aptActionLoading} title="Remove package">
+                            <Trash2 size={15} />
+                            Delete
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  {/each}
+                {/if}
+              </tbody>
+            </table>
           </article>
         </section>
       {:else if activeTab === 'llm'}
@@ -1195,13 +1722,8 @@
             <div class="panel-title">
               <h2>User Accounts</h2>
               <button class="primary" on:click={toggleAddUserForm} disabled={userLoading}>
-                {#if showAddUser}
-                  <X size={15} />
-                  Close
-                {:else}
-                  <UserPlus size={15} />
-                  Add User
-                {/if}
+                <UserPlus size={15} />
+                Add User
               </button>
             </div>
             {#if !canManageUsers}
@@ -1216,8 +1738,53 @@
                 <span>{userError}</span>
               </div>
             {/if}
-            {#if showAddUser && canManageUsers}
-              <form class="user-form add-user-form" on:submit|preventDefault={createUser}>
+            <table>
+              <thead><tr><th>Username</th><th>Permissions</th><th>Created</th><th>Updated</th><th>Actions</th></tr></thead>
+              <tbody>
+                {#each users as user (user.username)}
+                  <tr>
+                    <td>{user.username}</td>
+                    <td>{permissionSummary(user.permissions)}</td>
+                    <td>{formatDate(user.createdAt)}</td>
+                    <td>{formatDate(user.updatedAt)}</td>
+                    <td>
+                      <div class="user-row-actions">
+                        <button on:click={() => beginEditUser(user)} disabled={userLoading}>
+                          <Pencil size={15} />
+                          Edit
+                        </button>
+                        <button on:click={() => deleteUser(user.username)} disabled={!canManageUsers || userLoading || user.username === session?.username || users.length <= 1} title="Delete user">
+                          <Trash2 size={15} />
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                {/each}
+              </tbody>
+            </table>
+          </article>
+        </section>
+        {#if showAddUser && canManageUsers}
+          <div class="modal-backdrop" role="presentation" on:click={cancelAddUser}>
+            <div
+              class="modal-panel user-modal"
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="add-user-title"
+              tabindex="-1"
+              on:click|stopPropagation
+              on:keydown={(event) => handleModalKeydown(event, cancelAddUser)}
+            >
+              <header class="modal-header">
+                <div>
+                  <h2 id="add-user-title">Add User</h2>
+                  <span>Create a console account and assign permissions.</span>
+                </div>
+                <button class="icon-button" type="button" on:click={cancelAddUser} disabled={userLoading} title="Close modal">
+                  <X size={16} />
+                </button>
+              </header>
+              <form class="user-form modal-user-form" on:submit|preventDefault={createUser}>
                 <div class="user-form-grid">
                   <label>
                     <span>Username</span>
@@ -1247,88 +1814,85 @@
                     {/each}
                   </div>
                 </div>
-                <div class="button-row compact">
+                <div class="modal-actions">
+                  <button type="button" on:click={cancelAddUser} disabled={userLoading}>
+                    <X size={15} />
+                    Cancel
+                  </button>
                   <button class="primary" type="submit" disabled={userLoading || !newUser.username.trim() || newUser.password.length < 8 || newUser.confirm.length < 8}>
                     <UserPlus size={15} />
                     Create
                   </button>
                 </div>
               </form>
-            {/if}
-            <table>
-              <thead><tr><th>Username</th><th>Permissions</th><th>Created</th><th>Updated</th><th>Actions</th></tr></thead>
-              <tbody>
-                {#each users as user (user.username)}
-                  <tr>
-                    <td>{user.username}</td>
-                    <td>{permissionSummary(user.permissions)}</td>
-                    <td>{formatDate(user.createdAt)}</td>
-                    <td>{formatDate(user.updatedAt)}</td>
-                    <td>
-                      <div class="user-row-actions">
-                        <button on:click={() => beginEditUser(user)} disabled={userLoading}>
-                          <Pencil size={15} />
-                          Edit
-                        </button>
-                        <button on:click={() => deleteUser(user.username)} disabled={!canManageUsers || userLoading || user.username === session?.username || users.length <= 1} title="Delete user">
-                          <Trash2 size={15} />
-                        </button>
-                      </div>
-                    </td>
-                  </tr>
-                  {#if editingUsername === user.username}
-                    <tr class="user-edit-row">
-                      <td colspan="5">
-                        <form class="user-form edit-user-form" on:submit|preventDefault={updateUser}>
-                          <div class="user-form-grid">
-                            <label>
-                              <span>Username</span>
-                              <input value={userEditDraft.username} disabled />
-                            </label>
-                            <label>
-                              <span>New password</span>
-                              <input type="password" bind:value={userEditDraft.password} autocomplete="new-password" placeholder="Leave blank to keep current password" />
-                            </label>
-                            <label>
-                              <span>Confirm</span>
-                              <input type="password" bind:value={userEditDraft.confirm} autocomplete="new-password" />
-                            </label>
-                          </div>
-                          <div class="permission-field">
-                            <span>Permissions</span>
-                            <div class="permission-grid">
-                              {#each permissionOptions as permission}
-                                <label title={userEditDraft.username === 'root' ? 'Root always has every permission' : permission.description}>
-                                  <input
-                                    type="checkbox"
-                                    checked={(userEditDraft.permissions || []).includes(permission.id)}
-                                    disabled={userEditDraft.username === 'root'}
-                                    on:change={(event) => setEditUserPermission(permission.id, event.currentTarget.checked)}
-                                  />
-                                  <span>{permission.label}</span>
-                                </label>
-                              {/each}
-                            </div>
-                          </div>
-                          <div class="button-row compact">
-                            <button class="primary" type="submit" disabled={userLoading || (!!userEditDraft.password && (userEditDraft.password.length < 8 || userEditDraft.password !== userEditDraft.confirm))}>
-                              <Save size={15} />
-                              Save
-                            </button>
-                            <button type="button" on:click={cancelEditUser} disabled={userLoading}>
-                              <X size={15} />
-                              Cancel
-                            </button>
-                          </div>
-                        </form>
-                      </td>
-                    </tr>
-                  {/if}
-                {/each}
-              </tbody>
-            </table>
-          </article>
-        </section>
+            </div>
+          </div>
+        {/if}
+        {#if editingUsername && canManageUsers}
+          <div class="modal-backdrop" role="presentation" on:click={cancelEditUser}>
+            <div
+              class="modal-panel user-modal"
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="edit-user-title"
+              tabindex="-1"
+              on:click|stopPropagation
+              on:keydown={(event) => handleModalKeydown(event, cancelEditUser)}
+            >
+              <header class="modal-header">
+                <div>
+                  <h2 id="edit-user-title">Edit User</h2>
+                  <span>Update password and account permissions.</span>
+                </div>
+                <button class="icon-button" type="button" on:click={cancelEditUser} disabled={userLoading} title="Close modal">
+                  <X size={16} />
+                </button>
+              </header>
+              <form class="user-form modal-user-form" on:submit|preventDefault={updateUser}>
+                <div class="user-form-grid">
+                  <label>
+                    <span>Username</span>
+                    <input value={userEditDraft.username} disabled />
+                  </label>
+                  <label>
+                    <span>New password</span>
+                    <input type="password" bind:value={userEditDraft.password} autocomplete="new-password" placeholder="Leave blank to keep current password" />
+                  </label>
+                  <label>
+                    <span>Confirm</span>
+                    <input type="password" bind:value={userEditDraft.confirm} autocomplete="new-password" />
+                  </label>
+                </div>
+                <div class="permission-field">
+                  <span>Permissions</span>
+                  <div class="permission-grid">
+                    {#each permissionOptions as permission}
+                      <label title={userEditDraft.username === 'root' ? 'Root always has every permission' : permission.description}>
+                        <input
+                          type="checkbox"
+                          checked={(userEditDraft.permissions || []).includes(permission.id)}
+                          disabled={userEditDraft.username === 'root'}
+                          on:change={(event) => setEditUserPermission(permission.id, event.currentTarget.checked)}
+                        />
+                        <span>{permission.label}</span>
+                      </label>
+                    {/each}
+                  </div>
+                </div>
+                <div class="modal-actions">
+                  <button type="button" on:click={cancelEditUser} disabled={userLoading}>
+                    <X size={15} />
+                    Cancel
+                  </button>
+                  <button class="primary" type="submit" disabled={userLoading || (!!userEditDraft.password && (userEditDraft.password.length < 8 || userEditDraft.password !== userEditDraft.confirm))}>
+                    <Save size={15} />
+                    Save
+                  </button>
+                </div>
+              </form>
+            </div>
+          </div>
+        {/if}
       {:else if activeTab === 'services'}
         <section class="panel">
           <h2>Systemd Services</h2>
@@ -1347,22 +1911,19 @@
       {:else}
         <section class="panel console-panel">
           <h2>Web CLI</h2>
-          <form class="cli-form" on:submit|preventDefault={runConsoleCommand}>
-            <label class="cwd-input">
-              <span>cwd</span>
-              <input bind:value={consoleCwd} autocomplete="off" spellcheck="false" />
-            </label>
-            <label class="command-input">
-              <span>$</span>
-              <input bind:value={consoleCommand} autocomplete="off" spellcheck="false" />
-            </label>
-            <button class="primary" type="submit" disabled={consoleRunning || !consoleCommand.trim()}>
-              <Play size={15} />
-              Run
-            </button>
-          </form>
-
-          <div class="terminal">
+          <div class="terminal" class:busy={consoleRunning} aria-busy={consoleRunning} bind:this={terminalViewport}>
+            {#if activeConsoleCommand}
+              <div class="terminal-progress" role="status" aria-live="polite">
+                <div class="terminal-progress-box">
+                  <RefreshCw size={22} class="spin" />
+                  <div>
+                    <strong>Command running</strong>
+                    <code>{activeConsoleCommand.cwd || '/'} $ {activeConsoleCommand.command}</code>
+                    <span>started {activeConsoleCommand.at} · {formatMillis(consoleElapsedMillis)} elapsed</span>
+                  </div>
+                </div>
+              </div>
+            {/if}
             {#if terminalEntries.length === 0}
               <div class="terminal-empty">No commands executed in this browser session.</div>
             {/if}
@@ -1371,7 +1932,7 @@
                 <header>
                   <span>{entry.at}</span>
                   <strong>{entry.cwd || '/'} $ {entry.command}</strong>
-                  <em>exit {entry.exitCode} · {entry.durationMillis || 0} ms{entry.timedOut ? ' · timeout' : ''}</em>
+                  <em>exit {entry.exitCode} · {formatMillis(entry.durationMillis)}{entry.timedOut ? ' · timeout' : ''}</em>
                 </header>
                 {#if entry.stdout}
                   <pre>{entry.stdout}{entry.stdoutTruncated ? '\n[stdout truncated]' : ''}</pre>
@@ -1384,6 +1945,18 @@
                 {/if}
               </article>
             {/each}
+            <form class="terminal-prompt" on:submit|preventDefault={runConsoleCommand}>
+              <span>{consoleCwd}</span>
+              <strong>$</strong>
+              <input
+                bind:this={terminalInput}
+                bind:value={consoleCommand}
+                autocomplete="off"
+                aria-label="Terminal command"
+                disabled={consoleRunning}
+                spellcheck="false"
+              />
+            </form>
           </div>
         </section>
 

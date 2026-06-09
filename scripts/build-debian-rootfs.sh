@@ -68,6 +68,20 @@ chroot_run() {
     chroot "$ROOTFS_DIR" /usr/bin/env DEBIAN_FRONTEND=noninteractive "$@"
 }
 
+normalize_rootfs_permissions() {
+    chmod 755 "$ROOTFS_DIR"
+    for path in \
+        "$ROOTFS_DIR/var" \
+        "$ROOTFS_DIR/var/lib" \
+        "$ROOTFS_DIR/var/lib/ollama" \
+        "$ROOTFS_DIR/var/lib/ollama/models"
+    do
+        if [ -d "$path" ]; then
+            chmod 755 "$path"
+        fi
+    done
+}
+
 write_base_config() {
     printf '%s\n' "$DEBIAN_HOSTNAME" > "$ROOTFS_DIR/etc/hostname"
     cat > "$ROOTFS_DIR/etc/hosts" <<EOF
@@ -225,6 +239,7 @@ copy_boot_artifacts() {
 }
 
 pack_rootfs_image() {
+    normalize_rootfs_permissions
     mkdir -p "$(dirname "$DEBIAN_ROOTFS_IMAGE")"
     rm -f "$DEBIAN_ROOTFS_IMAGE"
     truncate -s "$DEBIAN_ROOTFS_SIZE" "$DEBIAN_ROOTFS_IMAGE"
@@ -254,6 +269,7 @@ ROOTFS_DIR="$DEBIAN_ROOTFS_WORK_DIR/rootfs"
 
 rm -rf "$DEBIAN_ROOTFS_WORK_DIR"
 mkdir -p "$ROOTFS_DIR"
+chmod 755 "$ROOTFS_DIR"
 
 $STATUS info "Bootstrapping Debian $DEBIAN_SUITE $DEBIAN_ARCH rootfs"
 debootstrap --arch="$DEBIAN_ARCH" --variant=minbase "$DEBIAN_SUITE" "$ROOTFS_DIR" "$DEBIAN_MIRROR"

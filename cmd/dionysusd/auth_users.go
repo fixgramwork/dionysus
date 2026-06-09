@@ -36,6 +36,7 @@ const rootAuthUsername = "root"
 var authPermissionCatalog = []authPermission{
 	{ID: "node.read", Label: "Node status", Description: "Read node status, metrics, and inventory"},
 	{ID: "network.manage", Label: "Network", Description: "Preview, save, and apply network settings"},
+	{ID: "packages.manage", Label: "Packages", Description: "Install, remove, and upgrade APT packages"},
 	{ID: "llm.manage", Label: "Local LLM", Description: "Read and apply local LLM runtime tuning"},
 	{ID: "services.manage", Label: "Services", Description: "Read service state and perform service operations"},
 	{ID: "console.run", Label: "Console", Description: "Run commands through the web console"},

@@ -73,6 +73,7 @@ initramfs는 `/proc`, `/sys`, 네트워크, 부트 상태를 확인하고 rescue
 - 인증 경로: `/api2/json/access/ticket` 은 `/etc/dionysus/pve.users.json` 에 저장된 운영자에게 JWT를 발급하고, 나머지 `/api2/json` API는 `Authorization: Bearer <jwt>` 를 요구합니다. `/api2/json/access/users` 계열 변경 API는 root 계정만 사용할 수 있으며, 웹 UI의 Users 페이지에서 계정 추가, 비밀번호 변경, 삭제, 사용자별 권한 설정을 처리합니다.
 - OS 상태 연결 경로: `/api2/json/nodes/localhost/status` 는 `/proc`, `/sys`, `/etc/os-release` 에서 읽은 운영체제 정보와 현재 `dionysusd proxy` 의 웹 리스너, 정적 루트, metrics DB, network config, JWT-auth 상태를 함께 제공합니다.
 - 네트워크 변경 경로: `/api2/json/nodes/localhost/network/config` 는 LAN/Wi-Fi 설정을 저장하고, 명시적 apply 요청에서만 `dionysus-network.service` 재시작을 요청합니다.
+- 패키지 관리 경로: `/api2/json/nodes/localhost/packages/status`, `/search`, `/install`, `/remove`, `/upgrade`, `/index/update` 는 `dpkg-query`, `apt-cache`, `apt-get` 을 셸 없이 직접 실행해 설치 수, 설치 목록, 검색 결과, 명시적 패키지 변경 작업을 웹 UI에 제공합니다.
 
 이 구조에서 호스트 OS가 살아 있으면 관리 웹도 살아 있고, 호스트 OS 자체가 종료되면 관리 웹도 함께 종료됩니다.
 VM이나 컨테이너 같은 게스트의 상태는 호스트 OS 내부의 Dionysus 서비스가 관찰하고 제어합니다.
@@ -95,6 +96,7 @@ QEMU virt machine -> Debian Linux kernel/initrd -> Debian ext4 rootfs -> systemd
 - rootfs 내부에는 `apt`, `systemd`, `linux-image-arm64`, 네트워크 도구, `sqlite3`, Go/Svelte Dionysus control plane이 들어갑니다.
 - QEMU 기본 네트워크는 `net.ifnames=0` 과 `dionysus-network.service` 의 `eth0 DHCP` 설정을 사용합니다.
 - Ollama는 Debian rootfs 빌드에서 기본 포함되며, 큰 이미지를 피해야 하면 `DIONYSUS_DEBIAN_INCLUDE_OLLAMA=0` 으로 제외합니다.
+- APT Packages UI는 이 rootfs 안에서 설치된 패키지 수와 목록을 표시하고, `apt-cache search` 결과에서 설치하거나 각 설치 행의 update/delete 버튼으로 `apt-get` 작업을 실행합니다.
 - 웹 콘솔은 Debian 패키지 작업을 위해 `DIONYSUS_CONSOLE_TIMEOUT_SECONDS=300` 을 기본 환경으로 사용합니다.
 - apt는 QEMU user network에서 안정적으로 동작하도록 IPv4 우선과 translation index 생략 설정을 포함합니다.
 - QEMU SSH 포워딩은 `127.0.0.1:10022 -> guest:22` 이며, 로컬 개발 이미지는 `root` 비밀번호 로그인을 허용합니다.

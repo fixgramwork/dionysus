@@ -75,6 +75,117 @@ func TestValidatesOllamaModelInputs(t *testing.T) {
 	}
 }
 
+func TestParsesAptInstalledPackages(t *testing.T) {
+	packages := parseAptInstalledPackages("zlib1g\t1:1.2.13.dfsg-1\tarm64\tinstall ok installed\nbase-files\t12.4+deb12u12\tarm64\tinstall ok installed\nremoved\t1.0\tarm64\tdeinstall ok config-files\n")
+	if len(packages) != 2 {
+		t.Fatalf("installed packages mismatch: %#v", packages)
+	}
+	if packages[0].Name != "base-files" || packages[0].Version != "12.4+deb12u12" || packages[0].Architecture != "arm64" {
+		t.Fatalf("first package mismatch: %#v", packages[0])
+	}
+	if packages[1].Name != "zlib1g" || packages[1].Status != "installed" {
+		t.Fatalf("second package mismatch: %#v", packages[1])
+	}
+}
+
+func TestParsesAptUpgradeablePackages(t *testing.T) {
+	upgradeable := parseAptUpgradeablePackages("Listing... Done\nbase-files/stable 12.4+deb12u12 arm64 [upgradable from: 12.4+deb12u5]\nlibssl3/stable-security 3.0.17-1~deb12u2 arm64 [upgradable from: 3.0.14-1]\n")
+	if len(upgradeable) != 2 {
+		t.Fatalf("upgradeable packages mismatch: %#v", upgradeable)
+	}
+	if upgradeable["base-files"] != "12.4+deb12u12" || upgradeable["libssl3"] != "3.0.17-1~deb12u2" {
+		t.Fatalf("upgradeable versions mismatch: %#v", upgradeable)
+	}
+}
+
+func TestParsesAptSearchResults(t *testing.T) {
+	installed := map[string]aptPackage{
+		"curl": {Name: "curl", Version: "7.88.1-10+deb12u12", Status: "installed"},
+	}
+	upgradeable := map[string]string{"curl": "7.88.1-10+deb12u14"}
+	results := parseAptSearchResults("curl - command line tool for transferring data with URL syntax\ncurlftpfs - filesystem to access FTP hosts based on FUSE and cURL\n", installed, upgradeable)
+	if len(results) != 2 {
+		t.Fatalf("search results mismatch: %#v", results)
+	}
+	if results[0].Name != "curlftpfs" || results[0].Installed {
+		t.Fatalf("not-installed result should sort first: %#v", results)
+	}
+	if results[1].Name != "curl" || !results[1].Installed || !results[1].Upgradeable || results[1].CandidateVersion == "" {
+		t.Fatalf("installed result mismatch: %#v", results[1])
+	}
+}
+
+func TestValidatesAptPackageInputs(t *testing.T) {
+	for _, value := range []string{"curl", "libstdc++6", "linux-image-arm64", "bash:arm64", "package_name"} {
+		cleaned, err := cleanAptPackageName(value)
+		if err != nil {
+			t.Fatalf("valid package rejected: %s: %v", value, err)
+		}
+		if cleaned != value {
+			t.Fatalf("package cleaned incorrectly: %s -> %s", value, cleaned)
+		}
+	}
+	for _, value := range []string{"", "-o", "curl install", "../bad", "Bad", "bad$"} {
+		if _, err := cleanAptPackageName(value); err == nil {
+			t.Fatalf("invalid package should be rejected: %q", value)
+		}
+	}
+	if _, err := cleanAptSearchQuery("curl tools"); err != nil {
+		t.Fatalf("search query should allow spaces: %v", err)
+	}
+	if _, err := cleanAptSearchQuery("curl\nbash"); err == nil {
+		t.Fatal("search query should reject newlines")
+	}
+}
+
+func TestAptPackageActionsSkipInDevMode(t *testing.T) {
+	cfg := Config{DevAllowHost: true}
+	result, err := installAptPackage(cfg, map[string]any{"name": "curl"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if asString(result["status"]) != "dev-skip" || asString(result["command"]) != "apt-get install -y curl" {
+		t.Fatalf("dev skip result mismatch: %#v", result)
+	}
+}
+
+func TestParsesSystemctlStatusSummary(t *testing.T) {
+	output := "dionysus-test\n    State: running\n    Units: 191 loaded\n     Jobs: 0 queued\n   Failed: 0 units\n    Since: Tue 2026-06-09 10:15:00 KST; 3min ago\n  systemd: 252.38-1\n   CGroup: /\n"
+	summary := parseSystemctlStatusSummary(output)
+	if asString(summary["host"]) != "dionysus-test" || asString(summary["state"]) != "running" {
+		t.Fatalf("systemctl status summary mismatch: %#v", summary)
+	}
+	if asString(summary["units"]) != "191 loaded" || asString(summary["jobs"]) != "0 queued" || asString(summary["failed"]) != "0 units" {
+		t.Fatalf("systemctl status counters mismatch: %#v", summary)
+	}
+	if asString(summary["since"]) == "" || asString(summary["systemd"]) != "252.38-1" || asString(summary["cgroup"]) != "/" {
+		t.Fatalf("systemctl status metadata mismatch: %#v", summary)
+	}
+}
+
+func TestSystemdStatusRunsSystemctlStatus(t *testing.T) {
+	root := uniqueTempDir(t, "systemctl-status")
+	binDir := filepath.Join(root, "bin")
+	systemctlPath := filepath.Join(binDir, "systemctl")
+	writeFile(t, systemctlPath, "#!/bin/sh\nprintf 'dionysus-test\\n    State: running\\n     Jobs: 0 queued\\n   Failed: 0 units\\n'\n")
+	if err := os.Chmod(systemctlPath, 0755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir)
+
+	result := systemdStatus()
+	if !asBool(result["available"]) || asString(result["status"]) != "ok" {
+		t.Fatalf("systemd status should succeed with fake systemctl: %#v", result)
+	}
+	if asString(result["command"]) != "systemctl status --no-pager --lines=80" {
+		t.Fatalf("systemd command label mismatch: %#v", result)
+	}
+	summary := asMap(result["summary"])
+	if asString(summary["host"]) != "dionysus-test" || asString(summary["state"]) != "running" {
+		t.Fatalf("systemd summary mismatch: %#v", result)
+	}
+}
+
 func TestAuthRequiresExistingTokenFile(t *testing.T) {
 	root := uniqueTempDir(t, "auth")
 	cfg := testConfig(root)
